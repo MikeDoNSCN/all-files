@@ -1,0 +1,1508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PRD to Code Generator - Multi-Model Support</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+            position: relative;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #444;
+        }
+        input[type="text"],
+        input[type="number"],
+        textarea,
+        select {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        /* Model selector styling */
+        .model-selector {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 25px;
+            border: 2px solid #e9ecef;
+        }
+        .model-selector h3 {
+            margin-top: 0;
+            color: #495057;
+            font-size: 18px;
+        }
+        .model-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        .model-card {
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: white;
+        }
+        .model-card:hover {
+            border-color: #2196F3;
+            box-shadow: 0 4px 12px rgba(33, 150, 243, 0.15);
+        }
+        .model-card.selected {
+            border-color: #2196F3;
+            background: #e3f2fd;
+        }
+        .model-card h4 {
+            margin: 0 0 8px 0;
+            color: #333;
+        }
+        .model-card .model-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-bottom: 8px;
+        }
+        .model-badge.new {
+            background: #4CAF50;
+            color: white;
+        }
+        .model-badge.coder {
+            background: #9C27B0;
+            color: white;
+        }
+        .model-badge.flagship {
+            background: #D32F2F;
+            color: white;
+            font-weight: bold;
+        }
+        .model-badge.popular {
+            background: #FF9800;
+            color: white;
+        }
+        .model-specs {
+            font-size: 13px;
+            color: #666;
+            line-height: 1.5;
+        }
+        .model-price {
+            font-weight: bold;
+            color: #2196F3;
+            margin-top: 5px;
+        }
+        /* API Key sections */
+        .api-key-section {
+            display: none;
+            margin-top: 15px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+            border: 1px solid #dee2e6;
+        }
+        .api-key-section.active {
+            display: block;
+        }
+        .alibaba-notice {
+            background: #e8f5e9;
+            border: 2px solid #4CAF50;
+            padding: 15px;
+            border-radius: 5px;
+            text-align: center;
+            color: #2e7d32;
+            font-weight: 500;
+        }
+        /* Directory input group styling */
+        .directory-input-group {
+            display: flex;
+            gap: 10px;
+            align-items: stretch;
+        }
+        .directory-input-wrapper {
+            flex: 1;
+            position: relative;
+        }
+        #outputDir {
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+            width: 100%;
+        }
+        .browse-btn {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            font-size: 14px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: 600;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .browse-btn:hover {
+            background: #45a049;
+        }
+        /* Directory picker modal */
+        .directory-picker-modal {
+            display: none;
+            position: fixed;
+            z-index: 1001;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+        }
+        .directory-picker-content {
+            background-color: white;
+            margin: 5% auto;
+            padding: 20px;
+            border-radius: 10px;
+            width: 80%;
+            max-width: 600px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        .directory-picker-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        .directory-picker-header h3 {
+            margin: 0;
+            color: #333;
+        }
+        .close-picker {
+            color: #aaa;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .close-picker:hover {
+            color: #000;
+        }
+        .quick-directories {
+            margin-bottom: 20px;
+        }
+        .quick-directories h4 {
+            margin-top: 0;
+            color: #555;
+        }
+        .directory-option {
+            padding: 12px;
+            margin: 8px 0;
+            background: #f8f9fa;
+            border: 2px solid #dee2e6;
+            border-radius: 5px;
+            cursor: pointer;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        .directory-option:hover {
+            background: #e3f2fd;
+            border-color: #2196F3;
+        }
+        .directory-option-title {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 4px;
+        }
+        .directory-option-path {
+            color: #666;
+            font-size: 12px;
+        }
+        /* Custom path history dropdown */
+        .path-history {
+            position: absolute;
+            background: white;
+            border: 2px solid #ddd;
+            border-top: none;
+            border-radius: 0 0 5px 5px;
+            max-height: 300px;
+            overflow-y: auto;
+            z-index: 1000;
+            width: 100%;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .path-item {
+            padding: 10px;
+            cursor: pointer;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+            border-bottom: 1px solid #f0f0f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .path-item:hover {
+            background: #f5f5f5;
+        }
+        .path-item:last-child {
+            border-bottom: none;
+        }
+        .path-item-text {
+            flex: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-right: 10px;
+            cursor: pointer;
+        }
+        .path-item-text:hover {
+            overflow: visible;
+            background: #f0f0f0;
+            z-index: 10;
+            position: relative;
+            padding: 2px 5px;
+            border-radius: 3px;
+        }
+        .path-item-remove {
+            color: #ff4444;
+            font-size: 20px;
+            font-weight: bold;
+            padding: 0 5px;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        .path-item-remove:hover {
+            color: #cc0000;
+        }
+        textarea {
+            min-height: 200px;
+            resize: vertical;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+        .file-upload {
+            position: relative;
+            display: inline-block;
+            cursor: pointer;
+            width: 100%;
+        }
+        .file-upload input[type="file"] {
+            position: absolute;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+        .file-upload-label {
+            display: block;
+            padding: 12px;
+            background: #4CAF50;
+            color: white;
+            text-align: center;
+            border-radius: 5px;
+            font-weight: 600;
+            transition: background 0.3s;
+        }
+        .file-upload-label:hover {
+            background: #45a049;
+        }
+        .button {
+            background: #2196F3;
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: 600;
+            width: 100%;
+            margin-top: 10px;
+        }
+        .button:hover {
+            background: #1976D2;
+        }
+        .button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .info-box {
+            background: #e3f2fd;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .success-box {
+            background: #e8f5e9;
+            border-left: 4px solid #4CAF50;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .error-box {
+            background: #ffebee;
+            border-left: 4px solid #f44336;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .warning-box {
+            background: #fff3e0;
+            border-left: 4px solid #ff9800;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        #status {
+            margin-top: 20px;
+            display: none;
+        }
+        .instructions {
+            background: #f5f5f5;
+            padding: 20px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        .instructions h3 {
+            margin-top: 0;
+            color: #555;
+        }
+        .instructions ol {
+            color: #666;
+            line-height: 1.8;
+        }
+        code {
+            background: #e8e8e8;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+        .file-list {
+            background: #f8f8f8;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 10px;
+            margin-top: 10px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 5px;
+            margin: 2px 0;
+            background: white;
+            border-radius: 3px;
+        }
+        .file-item button {
+            background: #f44336;
+            color: white;
+            border: none;
+            padding: 2px 8px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .token-info {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+            font-family: monospace;
+        }
+        .token-info h4 {
+            margin-top: 0;
+            color: #555;
+        }
+        .two-columns {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        @media (max-width: 600px) {
+            .two-columns {
+                grid-template-columns: 1fr;
+            }
+        }
+        .server-status {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 8px 15px;
+            border-radius: 5px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .server-online {
+            background: #4CAF50;
+            color: white;
+        }
+        .server-offline {
+            background: #f44336;
+            color: white;
+        }
+        .show-history-btn {
+            margin-top: 5px;
+            font-size: 12px;
+            color: #2196F3;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+        /* Enhanced Error Modal */
+        .error-modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.7);
+        }
+        .error-modal-content {
+            background-color: #1e1e1e;
+            margin: 5% auto;
+            padding: 20px;
+            border: 1px solid #ff4444;
+            border-radius: 10px;
+            width: 90%;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow-y: auto;
+            color: #ffffff;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+        .close-modal {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .close-modal:hover {
+            color: #fff;
+        }
+        .error-details-section {
+            background: #2d2d2d;
+            border: 1px solid #444;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 10px 0;
+        }
+        .error-details-section h3 {
+            color: #ff6b6b;
+            margin-top: 0;
+        }
+        .error-prompt {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 5px;
+            padding: 15px;
+            white-space: pre-wrap;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        .error-actions {
+            margin-top: 20px;
+            text-align: center;
+        }
+        .copy-btn {
+            background: #238636 !important;
+        }
+        .copy-btn:hover {
+            background: #2ea043 !important;
+        }
+        .copy-success {
+            background: #1e7e34 !important;
+        }
+    </style>
+</head>
+<body>
+    <div id="serverStatus" class="server-status server-offline">Server Offline</div>
+    <div class="container">
+        <h1>🚀 PRD to Code Generator</h1>
+        <p class="subtitle">Multi-Model Support: Gemini, Kimi K2, Qwen3 Models</p>
+        <div class="instructions">
+            <h3>📋 How to use:</h3>
+            <ol>
+                <li>Make sure the backend server is running: <code>python app.py</code></li>
+                <li>Select your preferred AI model (Gemini, Kimi K2, Qwen3-Coder 32B, or Qwen3-235B-A22B)</li>
+                <li>Enter your API key for the selected model (Qwen models use built-in keys)</li>
+                <li>Upload one or multiple PRD files</li>
+                <li>Choose output directory</li>
+                <li>Review token estimation</li>
+                <li>Click "Generate Code" and wait for AI to create your project!</li>
+            </ol>
+        </div>
+        <!-- Model Selection -->
+        <div class="model-selector">
+            <h3>🤖 Select AI Model</h3>
+            <div class="model-grid">
+                <div class="model-card" id="gemini-card" onclick="selectModel('gemini')">
+                    <h4>Gemini 2.5 Pro</h4>
+                    <span class="model-badge popular">Popular</span>
+                    <div class="model-specs">
+                        <div>✅ Provider: Google (via OpenRouter)</div>
+                        <div>✅ Context: 2M tokens</div>
+                        <div>✅ Speed: Very Fast</div>
+                        <div>✅ Great for: General code generation</div>
+                        <div class="model-price">$0.075/1M input • $0.30/1M output</div>
+                    </div>
+                </div>
+                <div class="model-card" id="kimi-card" onclick="selectModel('kimi')">
+                    <h4>Kimi K2</h4>
+                    <span class="model-badge new">NEW</span>
+                    <div class="model-specs">
+                        <div>✅ Provider: Moonshot AI (Direct)</div>
+                        <div>✅ Context: 128K tokens</div>
+                        <div>✅ Parameters: 1T total / 32B active</div>
+                        <div>✅ Best for: Complex coding & agents</div>
+                        <div class="model-price">$0.15/1M input • $2.50/1M output</div>
+                    </div>
+                </div>
+                <div class="model-card" id="qwen-card" onclick="selectModel('qwen')">
+                    <h4>Qwen3-Coder 32B</h4>
+                    <span class="model-badge coder">CODER</span>
+                    <div class="model-specs">
+                        <div>✅ Provider: Alibaba Direct API</div>
+                        <div>✅ Context: 131K tokens</div>
+                        <div>✅ Thinking Mode: Yes</div>
+                        <div>✅ Best for: Advanced coding tasks</div>
+                        <div class="model-price">$0.10/1M input • $0.40/1M output</div>
+                    </div>
+                </div>
+                <div class="model-card" id="qwen235-card" onclick="selectModel('qwen235')">
+                    <h4>Qwen3-235B-A22B</h4>
+                    <span class="model-badge flagship">FLAGSHIP</span>
+                    <div class="model-specs">
+                        <div>✅ Provider: Alibaba Direct API</div>
+                        <div>✅ Parameters: 235B total / 22B active</div>
+                        <div>✅ Context: 256K tokens</div>
+                        <div>✅ Best for: Most complex tasks</div>
+                        <div class="model-price">$0.15/1M input • $0.60/1M output</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <form id="prdForm">
+            <!-- OpenRouter API Key (for Gemini) -->
+            <div class="api-key-section" id="gemini-api-section">
+                <div class="form-group">
+                    <label for="openrouterApiKey">OpenRouter API Key:</label>
+                    <input type="text" id="openrouterApiKey" name="openrouterApiKey" placeholder="sk-or-...">
+                    <small style="color: #7c8a97; display: block; margin-top: 5px;">
+                        Get your key at <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai</a>
+                    </small>
+                </div>
+            </div>
+            <!-- Moonshot API Key (for Kimi K2) -->
+            <div class="api-key-section" id="kimi-api-section">
+                <div class="form-group">
+                    <label for="moonshotApiKey">Moonshot API Key:</label>
+                    <input type="text" id="moonshotApiKey" name="moonshotApiKey" placeholder="sk-...">
+                    <small style="color: #7c8a97; display: block; margin-top: 5px;">
+                        Get your key at <a href="https://platform.moonshot.ai" target="_blank">platform.moonshot.ai</a>
+                    </small>
+                </div>
+            </div>
+            <!-- Alibaba Direct API Notice (for Qwen models) -->
+            <div class="api-key-section" id="alibaba-api-section">
+                <div class="alibaba-notice">
+                    ✅ Using Alibaba Direct API with built-in API keys<br>
+                    <small>No additional API key required - keys are configured in server</small>
+                </div>
+                
+                <!-- Manual Key Selection -->
+                <div class="form-group" style="margin-top: 15px;">
+                    <label for="alibabaKeySelect">Select API Key (Manual):</label>
+                    <select id="alibabaKeySelect" name="alibabaKeySelect" style="width: 100%; padding: 10px; font-size: 14px;">
+                        <option value="0">Key 1 (sk-220d8834...)</option>
+                        <option value="1">Key 2 (sk-f2cc71cc...)</option>
+                        <option value="2">Key 3 (sk-3f14a4b1...)</option>
+                    </select>
+                    <small style="color: #7c8a97; display: block; margin-top: 5px;">
+                        💡 Manual selection - choose which API key to use
+                    </small>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="outputDir">Output Directory (project folder will be created here):</label>
+                <div class="directory-input-group">
+                    <div class="directory-input-wrapper">
+                        <input type="text" id="outputDir" name="outputDir" placeholder="C:\Users\NCPC\Documents\MYRAY FACTORY" value="output" list="recentPaths">
+                        <datalist id="recentPaths"></datalist>
+                        <div id="pathHistory" class="path-history" style="display: none;"></div>
+                    </div>
+                    <button type="button" class="browse-btn" onclick="showDirectoryPicker()">
+                        📁 Browse
+                    </button>
+                </div>
+                <small style="color: #7c8a97; display: block; margin-top: 5px;">
+                    💡 Quotes (" ") will be automatically removed if entered
+                </small>
+            </div>
+            <div class="form-group">
+                <label for="maxTokens">Max Output Tokens:</label>
+                <input type="number" id="maxTokens" name="maxTokens" value="100000" min="1000" max="2000000" required>
+                <small style="color: #7c8a97; display: block; margin-top: 5px;">
+                    💡 Maximum tokens for AI response (adjust based on selected model)
+                </small>
+            </div>
+            <div class="form-group">
+                <label>PRD Files (supports multiple files):</label>
+                <div class="file-upload" style="margin-bottom: 15px;">
+                    <input type="file" id="prdFiles" name="prdFiles" accept=".txt,.md,.doc,.docx" multiple>
+                    <label for="prdFiles" class="file-upload-label">
+                        📁 Choose PRD Files (or drag & drop)
+                    </label>
+                </div>
+                <div id="fileList" class="file-list" style="display: none;"></div>
+                <p style="text-align: center; color: #666; margin: 10px 0;">— OR —</p>
+                <label for="prdText">Paste PRD Text:</label>
+                <textarea id="prdText" name="prdText" placeholder="Enter your PRD content here..."></textarea>
+            </div>
+            <div id="tokenEstimation" class="token-info" style="display: none;">
+                <h4>📊 Token Estimation:</h4>
+                <div id="tokenDetails"></div>
+            </div>
+            <button type="button" class="button" id="estimateBtn" style="background: #FF9800;">
+                🔍 Estimate Tokens
+            </button>
+            <button type="submit" class="button" id="submitBtn">
+                🔮 Generate Code with <span id="submitBtnModel">Gemini</span>
+            </button>
+        </form>
+        <div id="status"></div>
+        <!-- Enhanced Error Modal -->
+        <div id="errorModal" class="error-modal" style="display: none;">
+            <div class="error-modal-content">
+                <span class="close-modal" onclick="closeErrorModal()">&times;</span>
+                <h2>🚨 Detailed Error Report</h2>
+                <div id="errorDetails"></div>
+                <div class="error-actions">
+                    <button class="button copy-btn" onclick="copyErrorToClipboard()">📋 Copy for Claude</button>
+                    <button class="button" onclick="downloadErrorLog()">💾 Download Log</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- Directory Picker Modal -->
+    <div id="directoryPickerModal" class="directory-picker-modal">
+        <div class="directory-picker-content">
+            <div class="directory-picker-header">
+                <h3>📁 Choose Output Directory</h3>
+                <span class="close-picker" onclick="closeDirectoryPicker()">&times;</span>
+            </div>
+            <div class="quick-directories">
+                <h4>Quick Access:</h4>
+                <div class="directory-option" onclick="selectDirectory('output')">
+                    <div class="directory-option-title">Default Output</div>
+                    <div class="directory-option-path">output</div>
+                </div>
+                <div class="directory-option" onclick="selectDirectory('C:\\Users\\NCPC\\Documents\\MYRAY FACTORY')">
+                    <div class="directory-option-title">MYRAY FACTORY</div>
+                    <div class="directory-option-path">C:\Users\NCPC\Documents\MYRAY FACTORY</div>
+                </div>
+                <div class="directory-option" onclick="selectDirectory('C:\\Users\\NCPC\\Documents\\MYRAY FACTORY\\PRD-Generator\\output')">
+                    <div class="directory-option-title">PRD Generator Output</div>
+                    <div class="directory-option-path">C:\Users\NCPC\Documents\MYRAY FACTORY\PRD-Generator\output</div>
+                </div>
+                <div class="directory-option" onclick="selectDirectory('C:\\Users\\NCPC\\Desktop')">
+                    <div class="directory-option-title">Desktop</div>
+                    <div class="directory-option-path">C:\Users\NCPC\Desktop</div>
+                </div>
+                <div class="directory-option" onclick="selectDirectory('C:\\Users\\NCPC\\Downloads')">
+                    <div class="directory-option-title">Downloads</div>
+                    <div class="directory-option-path">C:\Users\NCPC\Downloads</div>
+                </div>
+            </div>
+            <div class="quick-directories" id="recentDirectories" style="display: none;">
+                <h4>Recent Directories:</h4>
+                <!-- Will be populated dynamically -->
+            </div>
+        </div>
+    </div>
+    <!-- Include file-based storage instead of localStorage -->
+    <script src="config-storage.js"></script>
+    <script>
+        let selectedFiles = [];
+        let selectedModel = 'gemini'; // Default model
+        const API_URL = 'http://localhost:5000';
+        
+        // Model configurations
+        const modelConfigs = {
+            gemini: {
+                name: 'Gemini 2.5 Pro',
+                provider: 'openrouter',
+                maxTokens: 900000,
+                defaultTokens: 900000,
+                apiKeyField: 'openrouterApiKey',
+                apiSection: 'gemini-api-section'
+            },
+            kimi: {
+                name: 'Kimi K2',
+                provider: 'moonshot',
+                maxTokens: 128000,
+                defaultTokens: 100000,
+                apiKeyField: 'moonshotApiKey',
+                apiSection: 'kimi-api-section'
+            },
+            qwen: {
+                name: 'Qwen3-Coder',
+                provider: 'alibaba',
+                maxTokens: 131072,
+                defaultTokens: 32000,
+                apiKeyField: 'alibabaApiKey',
+                apiSection: 'alibaba-api-section'
+            },
+            qwen235: {
+                name: 'Qwen3-235B',
+                provider: 'alibaba',
+                maxTokens: 256000,
+                defaultTokens: 50000,
+                apiKeyField: 'alibabaApiKey',
+                apiSection: 'alibaba-api-section'
+            }
+        };
+        
+        // Directory Picker Functions
+        function showDirectoryPicker() {
+            const modal = document.getElementById('directoryPickerModal');
+            modal.style.display = 'block';
+            
+            // Load and display recent directories
+            loadRecentDirectoriesInPicker();
+        }
+        
+        function closeDirectoryPicker() {
+            const modal = document.getElementById('directoryPickerModal');
+            modal.style.display = 'none';
+        }
+        
+        function selectDirectory(path) {
+            document.getElementById('outputDir').value = path;
+            closeDirectoryPicker();
+            // Save to history
+            savePathToHistory(path);
+        }
+        
+        async function loadRecentDirectoriesInPicker() {
+            const paths = await configStorage.getPathHistory();
+            const recentDiv = document.getElementById('recentDirectories');
+            
+            if (paths.length > 0) {
+                recentDiv.style.display = 'block';
+                // Clear existing content except the h4
+                const h4 = recentDiv.querySelector('h4');
+                recentDiv.innerHTML = '';
+                recentDiv.appendChild(h4);
+                
+                // Add recent paths
+                paths.slice(0, 5).forEach(path => {
+                    const option = document.createElement('div');
+                    option.className = 'directory-option';
+                    option.onclick = () => selectDirectory(path);
+                    option.innerHTML = `
+                        <div class="directory-option-title">Recent</div>
+                        <div class="directory-option-path">${path}</div>
+                    `;
+                    recentDiv.appendChild(option);
+                });
+            }
+        }
+        
+        // Initialize model selection
+        async function initializeModelSelection() {
+            const settings = await configStorage.getSettings();
+            const savedModel = settings.selected_model || 'gemini';
+            selectModel(savedModel);
+        }
+        
+        // Select model
+        async function selectModel(model) {
+            selectedModel = model;
+            await configStorage.saveSetting('selected_model', model);
+            
+            // Update UI
+            document.querySelectorAll('.model-card').forEach(card => {
+                card.classList.remove('selected');
+            });
+            document.getElementById(`${model}-card`).classList.add('selected');
+            
+            // Show appropriate API key section
+            document.querySelectorAll('.api-key-section').forEach(section => {
+                section.classList.remove('active');
+            });
+            document.getElementById(modelConfigs[model].apiSection).classList.add('active');
+            
+            // Update submit button text
+            document.getElementById('submitBtnModel').textContent = modelConfigs[model].name;
+            
+            // Update max tokens based on model
+            const maxTokensInput = document.getElementById('maxTokens');
+            maxTokensInput.max = modelConfigs[model].maxTokens;
+            if (parseInt(maxTokensInput.value) > modelConfigs[model].maxTokens) {
+                maxTokensInput.value = modelConfigs[model].defaultTokens;
+            }
+            
+            // Update token field placeholder
+            maxTokensInput.placeholder = `Max ${modelConfigs[model].maxTokens.toLocaleString()} for ${modelConfigs[model].name}`;
+        }
+        
+        // Check server status
+        async function checkServerStatus() {
+            try {
+                const response = await fetch(`${API_URL}/health`);
+                if (response.ok) {
+                    document.getElementById('serverStatus').className = 'server-status server-online';
+                    document.getElementById('serverStatus').textContent = 'Server Online';
+                    return true;
+                }
+            } catch (error) {
+                captureErrorDetails(error, 'Server Status Check');
+                document.getElementById('serverStatus').className = 'server-status server-offline';
+                document.getElementById('serverStatus').textContent = 'Server Offline';
+                return false;
+            }
+        }
+        
+        // Check server status on load and periodically
+        checkServerStatus();
+        setInterval(checkServerStatus, 5000);
+        
+        // Handle file upload
+        const fileInput = document.getElementById('prdFiles');
+        const textArea = document.getElementById('prdText');
+        const fileLabel = document.querySelector('.file-upload-label');
+        const fileList = document.getElementById('fileList');
+        
+        fileInput.addEventListener('change', handleFileSelect);
+        
+        function handleFileSelect(e) {
+            selectedFiles = Array.from(e.target.files);
+            updateFileList();
+            combineFilesContent();
+        }
+        
+        function updateFileList() {
+            fileList.innerHTML = '';
+            fileList.style.display = selectedFiles.length > 0 ? 'block' : 'none';
+            
+            selectedFiles.forEach((file, index) => {
+                const item = document.createElement('div');
+                item.className = 'file-item';
+                item.innerHTML = `
+                    <span>${file.name} (${(file.size / 1024).toFixed(2)} KB)</span>
+                    <button type="button" onclick="removeFile(${index})">Remove</button>
+                `;
+                fileList.appendChild(item);
+            });
+            
+            fileLabel.textContent = selectedFiles.length > 0
+                ? `📄 ${selectedFiles.length} file(s) selected`
+                : '📁 Choose PRD Files (or drag & drop)';
+            
+            // Update file input
+            const dt = new DataTransfer();
+            selectedFiles.forEach(file => dt.items.add(file));
+            fileInput.files = dt.files;
+        }
+        
+        window.removeFile = function(index) {
+            selectedFiles.splice(index, 1);
+            updateFileList();
+            combineFilesContent();
+        }
+        
+        function combineFilesContent() {
+            if (selectedFiles.length === 0) {
+                textArea.value = '';
+                return;
+            }
+            
+            let contents = [];
+            let filesRead = 0;
+            
+            selectedFiles.forEach((file, index) => {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    contents[index] = `=== File: ${file.name} ===\n${e.target.result}`;
+                    filesRead++;
+                    
+                    if (filesRead === selectedFiles.length) {
+                        textArea.value = contents.join('\n');
+                    }
+                };
+                reader.readAsText(file);
+            });
+        }
+        
+        // Handle drag and drop
+        const fileUpload = document.querySelector('.file-upload');
+        
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            fileUpload.addEventListener(eventName, preventDefaults, false);
+        });
+        
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        
+        ['dragenter', 'dragover'].forEach(eventName => {
+            fileUpload.addEventListener(eventName, highlight, false);
+        });
+        
+        ['dragleave', 'drop'].forEach(eventName => {
+            fileUpload.addEventListener(eventName, unhighlight, false);
+        });
+        
+        function highlight(e) {
+            fileUpload.style.opacity = '0.8';
+        }
+        
+        function unhighlight(e) {
+            fileUpload.style.opacity = '1';
+        }
+        
+        fileUpload.addEventListener('drop', handleDrop, false);
+        
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            
+            if (files.length > 0) {
+                selectedFiles = Array.from(files);
+                updateFileList();
+                combineFilesContent();
+            }
+        }
+        
+        // Token estimation
+        document.getElementById('estimateBtn').addEventListener('click', async function() {
+            const content = document.getElementById('prdText').value;
+            if (!content.trim()) {
+                showStatus('Please upload files or enter PRD content first!', 'error');
+                return;
+            }
+            
+            const isOnline = await checkServerStatus();
+            if (!isOnline) {
+                showStatus('Server is offline. Please run: python app.py', 'error');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_URL}/api/estimate`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        content,
+                        maxTokens: parseInt(document.getElementById('maxTokens').value) || modelConfigs[selectedModel].defaultTokens,
+                        model: selectedModel
+                    })
+                });
+                
+                const data = await response.json();
+                const tokenDiv = document.getElementById('tokenEstimation');
+                const tokenDetails = document.getElementById('tokenDetails');
+                
+                // Get model pricing
+                const pricing = selectedModel === 'kimi' ?
+                    { input: 0.00015, output: 0.0025 } :
+                    selectedModel === 'qwen' ?
+                    { input: 0.0001, output: 0.0004 } :
+                    selectedModel === 'qwen235' ?
+                    { input: 0.00015, output: 0.0006 } :
+                    { input: 0.000075, output: 0.0003 };
+                
+                tokenDetails.innerHTML = `
+                    <strong>Model:</strong> ${modelConfigs[selectedModel].name}<br>
+                    <strong>Content size:</strong> ${data.contentSize.toLocaleString()} characters<br>
+                    <strong>Estimated input tokens:</strong> ${data.estimatedTokens.toLocaleString()}<br>
+                    <strong>Max output tokens:</strong> ${(parseInt(document.getElementById('maxTokens').value) || modelConfigs[selectedModel].defaultTokens).toLocaleString()}<br>
+                    <strong>Available output tokens:</strong> ${data.availableOutputTokens.toLocaleString()}<br>
+                    <strong>Estimated input cost:</strong> $${(data.estimatedTokens * pricing.input / 1000).toFixed(4)}<br>
+                    <strong>Max output cost:</strong> $${(parseInt(document.getElementById('maxTokens').value) * pricing.output / 1000).toFixed(4)}<br>
+                    <small style="color: #666;">Note: Actual costs may vary based on usage</small>
+                `;
+                tokenDiv.style.display = 'block';
+                
+                if (data.estimatedTokens > modelConfigs[selectedModel].maxTokens * 0.8) {
+                    showStatus(`Warning: PRD is very large (${data.estimatedTokens.toLocaleString()} tokens). Consider splitting into smaller files.`, 'warning');
+                }
+            } catch (error) {
+                captureErrorDetails(error, 'Token Estimation');
+                showStatus('Error estimating tokens: ' + error.message, 'error');
+            }
+        });
+        
+        // Form submission
+        document.getElementById('prdForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const isOnline = await checkServerStatus();
+            if (!isOnline) {
+                showStatus('Server is offline. Please run: python app.py', 'error');
+                return;
+            }
+            
+            // Get the appropriate API key
+            const apiKeyField = modelConfigs[selectedModel].apiKeyField;
+            let apiKey = '';
+            
+            // For Alibaba models, use a dummy key since real keys are in server
+            if (modelConfigs[selectedModel].provider === 'alibaba') {
+                apiKey = 'built-in';
+            } else {
+                apiKey = document.getElementById(apiKeyField).value;
+                if (!apiKey) {
+                    showStatus(`Please enter your ${modelConfigs[selectedModel].name} API key`, 'error');
+                    return;
+                }
+            }
+            
+            const formData = new FormData();
+            formData.append('apiKey', apiKey);
+            formData.append('model', selectedModel);
+            formData.append('provider', modelConfigs[selectedModel].provider);
+            formData.append('outputDir', document.getElementById('outputDir').value || 'output');
+            formData.append('maxTokens', document.getElementById('maxTokens').value || modelConfigs[selectedModel].defaultTokens.toString());
+            formData.append('prdText', document.getElementById('prdText').value);
+            
+            // Add Alibaba key index if using Qwen models
+            if (modelConfigs[selectedModel].provider === 'alibaba') {
+                formData.append('alibabaKeyIndex', document.getElementById('alibabaKeySelect').value || '0');
+            }
+            
+            // Add files
+            selectedFiles.forEach(file => {
+                formData.append('prdFiles', file);
+            });
+            
+            const submitBtn = document.getElementById('submitBtn');
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = `⏳ Generating code with ${modelConfigs[selectedModel].name}... (this may take 30-60 seconds)`;
+            
+            showStatus(`Processing... Sending to ${modelConfigs[selectedModel].name}`, 'info');
+            
+            try {
+                console.log('Sending request to:', `${API_URL}/api/generate`);
+                console.log('FormData contents:');
+                for (let [key, value] of formData.entries()) {
+                    console.log(`  ${key}:`, value);
+                }
+                
+                const response = await fetch(`${API_URL}/api/generate`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                console.log('Response status:', response.status);
+                console.log('Response data:', data);
+                
+                if (response.ok && data.success) {
+                    const tokenInfo = data.tokenInfo || {};
+                    const pricing = selectedModel === 'kimi' ?
+                        { input: 0.00015, output: 0.0025 } :
+                        selectedModel === 'qwen' ?
+                        { input: 0.0001, output: 0.0004 } :
+                        selectedModel === 'qwen235' ?
+                        { input: 0.00015, output: 0.0006 } :
+                        { input: 0.000075, output: 0.0003 };
+                    
+                    const totalCost = (tokenInfo.actual_input * pricing.input / 1000) +
+                                    (tokenInfo.output * pricing.output / 1000);
+                    
+                    showStatus(`
+                        <strong>✅ Success!</strong><br>
+                        Project "<strong>${data.projectName}</strong>" has been generated.<br><br>
+                        <strong>🤖 Model Used:</strong> ${modelConfigs[selectedModel].name}<br>
+                        <strong>📊 Final Token Usage:</strong><br>
+                        - Input tokens: ${tokenInfo.actual_input?.toLocaleString() || 'N/A'}<br>
+                        - Output tokens: ${tokenInfo.output?.toLocaleString() || 'N/A'}<br>
+                        - Total tokens: ${tokenInfo.total?.toLocaleString() || 'N/A'}<br>
+                        - Total cost: $${totalCost.toFixed(4)}<br><br>
+                        <strong>📁 Output location:</strong><br>
+                        <code>${data.outputPath}</code><br><br>
+                        <strong>Next steps:</strong><br>
+                        1. Check the <code>_generation_info.json</code> file for details<br>
+                        2. Review the generated code and documentation<br>
+                        3. Follow the README.md for setup instructions
+                    `, 'success');
+                    
+                    // Save path to history
+                    const path = document.getElementById('outputDir').value.trim();
+                    savePathToHistory(path);
+                } else {
+                    showStatus(`Error: ${data.error || 'Unknown error occurred'}`, 'error');
+                }
+            } catch (error) {
+                captureErrorDetails(error, 'Code Generation');
+                showStatus('Error: ' + error.message, 'error');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = `🔮 Generate Code with <span id="submitBtnModel">${modelConfigs[selectedModel].name}</span>`;
+            }
+        });
+        
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.className = type === 'error' ? 'error-box' :
+                               type === 'success' ? 'success-box' :
+                               type === 'warning' ? 'warning-box' : 'info-box';
+            statusDiv.innerHTML = message;
+            statusDiv.style.display = 'block';
+            
+            // For errors, show additional button to view details
+            if (type === 'error') {
+                statusDiv.innerHTML += '<br><br><button class="button" onclick="showErrorModal()">📋 View Detailed Error</button>';
+            }
+        }
+        
+        // Enhanced error handling system
+        let lastErrorDetails = null;
+        
+        function captureErrorDetails(error, context) {
+            const timestamp = new Date().toISOString();
+            const browserInfo = {
+                userAgent: navigator.userAgent,
+                platform: navigator.platform,
+                language: navigator.language,
+                cookieEnabled: navigator.cookieEnabled,
+                onLine: navigator.onLine
+            };
+            
+            // Get form data
+            const apiKeyField = modelConfigs[selectedModel].apiKeyField;
+            const formData = {
+                model: selectedModel,
+                apiKey: modelConfigs[selectedModel].provider === 'alibaba' ? 'Built-in' : 
+                       (document.getElementById(apiKeyField).value ? 'Present (hidden)' : 'Missing'),
+                outputDir: document.getElementById('outputDir').value || 'Not specified',
+                maxTokens: document.getElementById('maxTokens').value || 'Not specified',
+                prdTextLength: document.getElementById('prdText').value.length,
+                filesUploaded: selectedFiles.length
+            };
+            
+            // Create detailed error object
+            lastErrorDetails = {
+                timestamp,
+                context,
+                error: {
+                    message: error.message || error,
+                    stack: error.stack || 'No stack trace available',
+                    type: error.name || 'Unknown Error'
+                },
+                formData,
+                browserInfo,
+                serverStatus: document.getElementById('serverStatus').textContent,
+                projectPath: 'C:\\Users\\NCPC\\Documents\\MYRAY FACTORY\\PRD-Generator'
+            };
+            
+            return lastErrorDetails;
+        }
+        
+        function formatErrorForClaudePrompt(details) {
+            return `I need help debugging my PRD Generator error.
+## Error Context
+**Location**: C:\\Users\\NCPC\\Documents\\MYRAY FACTORY\\PRD-Generator
+**Timestamp**: ${details.timestamp}
+**Operation**: ${details.context}
+**Server Status**: ${details.serverStatus}
+**Model Selected**: ${details.formData.model}
+## Error Details
+**Error Type**: ${details.error.type}
+**Error Message**: ${details.error.message}
+## Stack Trace
+\`\`\`
+${details.error.stack}
+\`\`\`
+## Form Data at Time of Error
+- Model: ${details.formData.model}
+- API Key: ${details.formData.apiKey}
+- Output Directory: ${details.formData.outputDir}
+- Max Tokens: ${details.formData.maxTokens}
+- PRD Text Length: ${details.formData.prdTextLength} characters
+- Files Uploaded: ${details.formData.filesUploaded}
+## System Information
+- User Agent: ${details.browserInfo.userAgent}
+- Platform: ${details.browserInfo.platform}
+- Online: ${details.browserInfo.onLine}
+## Files to Check
+Please use desktop-commander to:
+1. read_file "C:\\Users\\NCPC\\Documents\\MYRAY FACTORY\\PRD-Generator\\app.py"
+2. search_code pattern="${details.error.message.substring(0, 20)}" path="C:\\Users\\NCPC\\Documents\\MYRAY FACTORY\\PRD-Generator"
+3. Check Python terminal for server-side errors
+## What I Was Trying To Do
+[Please add what specific action you were performing when this error occurred]
+Please help me identify and fix this error.`;
+        }
+        
+        function showErrorModal() {
+            if (!lastErrorDetails) return;
+            
+            const modal = document.getElementById('errorModal');
+            const detailsDiv = document.getElementById('errorDetails');
+            
+            detailsDiv.innerHTML = `
+                <div class="error-details-section">
+                    <h3>📍 Error Summary</h3>
+                    <p><strong>Time:</strong> ${lastErrorDetails.timestamp}</p>
+                    <p><strong>Context:</strong> ${lastErrorDetails.context}</p>
+                    <p><strong>Message:</strong> ${lastErrorDetails.error.message}</p>
+                    <p><strong>Model:</strong> ${lastErrorDetails.formData.model}</p>
+                </div>
+                <div class="error-details-section">
+                    <h3>📊 System State</h3>
+                    <p><strong>Server:</strong> ${lastErrorDetails.serverStatus}</p>
+                    <p><strong>API Key:</strong> ${lastErrorDetails.formData.apiKey}</p>
+                    <p><strong>Output Dir:</strong> ${lastErrorDetails.formData.outputDir}</p>
+                    <p><strong>Max Tokens:</strong> ${lastErrorDetails.formData.maxTokens}</p>
+                    <p><strong>PRD Size:</strong> ${lastErrorDetails.formData.prdTextLength} chars</p>
+                </div>
+                <div class="error-details-section">
+                    <h3>🔍 Stack Trace</h3>
+                    <pre style="overflow-x: auto;">${lastErrorDetails.error.stack}</pre>
+                </div>
+                <div class="error-details-section">
+                    <h3>📋 Claude-Ready Debug Prompt</h3>
+                    <div class="error-prompt" id="claudePrompt">${formatErrorForClaudePrompt(lastErrorDetails)}</div>
+                </div>
+            `;
+            
+            modal.style.display = 'block';
+        }
+        
+        function closeErrorModal() {
+            document.getElementById('errorModal').style.display = 'none';
+        }
+        
+        function copyErrorToClipboard() {
+            const promptText = formatErrorForClaudePrompt(lastErrorDetails);
+            navigator.clipboard.writeText(promptText).then(() => {
+                const btn = event.target;
+                btn.textContent = '✅ Copied!';
+                btn.classList.add('copy-success');
+                setTimeout(() => {
+                    btn.textContent = '📋 Copy for Claude';
+                    btn.classList.remove('copy-success');
+                }, 2000);
+            });
+        }
+        
+        function downloadErrorLog() {
+            const logContent = JSON.stringify(lastErrorDetails, null, 2);
+            const blob = new Blob([logContent], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `prd_error_${lastErrorDetails.timestamp.replace(/[:.]/g, '-')}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+        
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const errorModal = document.getElementById('errorModal');
+            const dirModal = document.getElementById('directoryPickerModal');
+            
+            if (event.target === errorModal) {
+                closeErrorModal();
+            } else if (event.target === dirModal) {
+                closeDirectoryPicker();
+            }
+        }
+        
+        // Save API keys to file storage
+        const openrouterKeyInput = document.getElementById('openrouterApiKey');
+        const moonshotKeyInput = document.getElementById('moonshotApiKey');
+        
+        // Load API keys from file storage (which checks backend .env first)
+        async function loadApiKeys() {
+            try {
+                const apiKeys = await configStorage.getApiKeys();
+                if (apiKeys.openrouter_api_key && !openrouterKeyInput.value) {
+                    openrouterKeyInput.value = apiKeys.openrouter_api_key;
+                }
+                if (apiKeys.moonshot_api_key && !moonshotKeyInput.value) {
+                    moonshotKeyInput.value = apiKeys.moonshot_api_key;
+                }
+            } catch (error) {
+                console.log('Could not load API keys:', error);
+            }
+        }
+        
+        // Load keys on page load
+        loadApiKeys();
+        
+        // Save keys on change
+        openrouterKeyInput.addEventListener('change', function() {
+            configStorage.saveApiKey('openrouter_api_key', this.value);
+        });
+        
+        moonshotKeyInput.addEventListener('change', function() {
+            configStorage.saveApiKey('moonshot_api_key', this.value);
+        });
+        
+        // Save and restore Max Tokens
+        const maxTokensInput = document.getElementById('maxTokens');
+        
+        // Load max tokens from file storage
+        async function loadMaxTokens() {
+            const settings = await configStorage.getSettings();
+            if (settings.max_tokens) {
+                maxTokensInput.value = settings.max_tokens;
+            }
+        }
+        
+        loadMaxTokens();
+        
+        maxTokensInput.addEventListener('change', function() {
+            configStorage.saveSetting('max_tokens', this.value);
+        });
+        
+        // Path history management
+        const outputDirInput = document.getElementById('outputDir');
+        const pathHistoryDiv = document.getElementById('pathHistory');
+        const recentPathsDatalist = document.getElementById('recentPaths');
+        const MAX_PATHS = 20;
+        
+        // Load saved paths
+        async function loadSavedPaths() {
+            return await configStorage.getPathHistory();
+        }
+        
+        // Save path to history
+        async function savePathToHistory(path) {
+            if (!path || path === 'output') return;
+            await configStorage.addPath(path);
+            updatePathDisplay();
+        }
+        
+        // Update path display
+        async function updatePathDisplay() {
+            const paths = await loadSavedPaths();
+            
+            // Update datalist for native suggestions
+            recentPathsDatalist.innerHTML = '';
+            paths.forEach(path => {
+                const option = document.createElement('option');
+                option.value = path;
+                recentPathsDatalist.appendChild(option);
+            });
+            
+            // Update custom path history
+            pathHistoryDiv.innerHTML = '';
+            if (paths.length > 0) {
+                paths.forEach((path, index) => {
+                    const pathItem = document.createElement('div');
+                    pathItem.className = 'path-item';
+                    pathItem.innerHTML = `
+                        <span class="path-item-text" title="${path}">${path}</span>
+                        <span class="path-item-remove" onclick="removePath(${index})">&times;</span>
+                    `;
+                    pathItem.querySelector('.path-item-text').onclick = function() {
+                        outputDirInput.value = path;
+                        pathHistoryDiv.style.display = 'none';
+                    };
+                    pathHistoryDiv.appendChild(pathItem);
+                });
+            }
+        }
+        
+        // Remove path from history
+        window.removePath = async function(index) {
+            const paths = await loadSavedPaths();
+            const pathToRemove = paths[index];
+            if (pathToRemove) {
+                await configStorage.removePath(pathToRemove);
+                updatePathDisplay();
+            }
+            event.stopPropagation();
+        };
+        
+        // Show/hide path history on focus
+        outputDirInput.addEventListener('focus', function() {
+            loadSavedPaths().then(paths => {
+                if (paths.length > 0) {
+                    pathHistoryDiv.style.display = 'block';
+                }
+            });
+        });
+        
+        // Hide on blur (with delay for clicks)
+        outputDirInput.addEventListener('blur', function() {
+            setTimeout(() => {
+                pathHistoryDiv.style.display = 'none';
+            }, 200);
+        });
+        
+        // Add a button to show history
+        const showHistoryBtn = document.createElement('div');
+        showHistoryBtn.className = 'show-history-btn';
+        showHistoryBtn.textContent = '📁 Show recent paths';
+        showHistoryBtn.onclick = function() {
+            loadSavedPaths().then(paths => {
+                if (paths.length > 0) {
+                    pathHistoryDiv.style.display = pathHistoryDiv.style.display === 'none' ? 'block' : 'none';
+                }
+            });
+        };
+        outputDirInput.parentElement.parentElement.appendChild(showHistoryBtn);
+        
+        // Initialize model selection on page load
+        initializeModelSelection();
+        
+        // Load path history on page load
+        updatePathDisplay();
+        
+        // Handle Alibaba key selection preference
+        const alibabaKeySelect = document.getElementById('alibabaKeySelect');
+        
+        // Load saved preference
+        const savedKeyIndex = localStorage.getItem('alibaba_key_index') || '0';
+        if (alibabaKeySelect) {
+            alibabaKeySelect.value = savedKeyIndex;
+        }
+        
+        // Save preference on change
+        alibabaKeySelect.addEventListener('change', function() {
+            localStorage.setItem('alibaba_key_index', this.value);
+            console.log('Saved Alibaba key preference:', this.value);
+        });
+    </script>
+</body>
+</html>
