@@ -1,0 +1,2896 @@
+================================================================================
+PRD GENERATOR - COMPLETE PROJECT FILES
+Created: 2025-07-24
+Location: C:\Users\NCPC\Documents\MYRAY FACTORY\PRD-Generator
+================================================================================
+
+This file contains all important files from the PRD Generator project.
+Total files included: 10 core files
+
+FILES INCLUDED:
+1. app.py - Main Flask server
+2. index.html - Web UI interface  
+3. config_manager.py - Configuration management
+4. openrouter_client.py - Gemini client
+5. moonshot_client.py - Kimi K2 client
+6. alibaba-cloud-client.py - Qwen models client
+7. requirements.txt - Python dependencies
+8. config/ALIBABA-KEYS.json - Alibaba API keys
+9. config/API-KEYS.json - OpenRouter & Moonshot keys
+10. README.md - Project documentation
+
+================================================================================
+FILE 1: app.py
+================================================================================
+"""
+PRD-GENERATOR SERVER - Multi-Model Code Generation Platform
+Created: July 23, 2025
+Updated: July 23, 2025
+
+Features:
+- Multi-model support (Gemini, Kimi K2, Qwen-Plus, Qwen-Max)
+- Direct Alibaba Cloud API integration for Qwen models
+- File-based configuration storage
+- Token estimation and cost calculation
+- Automatic code generation from PRDs
+
+Models:
+- Gemini 2.5 Pro: Fast, 2M context (via OpenRouter)
+- Kimi K2: Agent systems, 128K context (via Moonshot)
+- Qwen-Plus: 131K context with thinking mode (via Alibaba Direct)
+- Qwen-Max: 32K context, flagship model (via Alibaba Direct)
+"""
+
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
+import os
+import json
+from openrouter_client import OpenRouterClient
+from moonshot_client import MoonshotClient
+from werkzeug.utils import secure_filename
+import tempfile
+import shutil
+import random
+import sys
+from datetime import datetime
+
+# Import our config manager
+from config_manager import config_manager
+
+# Import Alibaba Cloud client (handling hyphenated filename)
+import importlib.util
+spec = importlib.util.spec_from_file_location("alibaba_cloud_client", "alibaba-cloud-client.py")
+alibaba_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(alibaba_module)
+AlibabCloudClient = alibaba_module.AlibabCloudClient
+
+# Load Alibaba API keys from environment or config file
+ALIBABA_KEYS = []
+# Try to load from environment variables
+for i in range(1, 4):
+    key = os.getenv(f'ALIBABA_API_KEY_{i}')
+    if key:
+        ALIBABA_KEYS.append(key)
+
+# If no env keys, try config file (but DON'T commit this file!)
+if not ALIBABA_KEYS:
+    try:
+        with open('config/ALIBABA-KEYS.json', 'r') as f:
+            ALIBABA_KEYS = json.load(f)  # Directly load the array
+    except Exception as e:
+        print(f"WARNING: No Alibaba API keys found. Qwen models won't work. Error: {e}")
+
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
+app = Flask(__name__)
+CORS(app)
+
+# Add request logging
+@app.before_request
+def log_request_info():
+    print(f">>> {request.method} {request.path}", flush=True)
+    if request.method == 'POST':
+        print(f">>> Form data: {dict(request.form)}", flush=True)
+        print(f">>> Files: {list(request.files.keys())}", flush=True)
+
+# Add health check endpoint
+@app.route('/health')
+def health_check():
+    """Simple health check endpoint for the UI."""
+    return jsonify({'status': 'healthy'}), 200
+
+# Serve the HTML file
+@app.route('/')
+def index():
+    """Serve the main HTML interface."""
+    return send_from_directory('.', 'index.html')
+
+# Serve static files (JS, CSS, etc.)
+@app.route('/<path:path>')
+def serve_static(path):
+    """Serve static files."""
+    return send_from_directory('.', path)
+
+# API endpoint to save API keys to local storage
+@app.route('/api/config/keys', methods=['POST'])
+def save_api_keys():
+    """Save API keys to local file storage"""
+    data = request.json
+    for key, value in data.items():
+        config_manager.save_api_key(key, value)
+    return jsonify({'success': True})
+
+@app.route('/api/config/settings', methods=['GET'])
+def get_settings():
+    """Get settings from local file storage"""
+    return jsonify(config_manager.get_settings())
+
+@app.route('/api/config/settings', methods=['POST'])
+def save_settings():
+    """Save settings to local file storage"""
+    data = request.json
+    for key, value in data.items():
+        config_manager.save_setting(key, value)
+    return jsonify({'success': True})
+
+@app.route('/api/config/paths', methods=['GET'])
+def get_path_history():
+    """Get path history from local file storage"""
+    return jsonify({'paths': config_manager.get_path_history()})
+
+@app.route('/api/config/paths', methods=['POST'])
+def add_path():
+    """Add path to history"""
+    data = request.json
+    config_manager.add_path_to_history(data.get('path', ''))
+    return jsonify({'success': True})
+
+@app.route('/api/config/paths/remove', methods=['POST'])
+def remove_path():
+    """Remove path from history"""
+    data = request.json
+    config_manager.remove_path_from_history(data.get('path', ''))
+    return jsonify({'success': True})
+
+@app.route('/api/config/clear', methods=['POST'])
+def clear_config():
+    """Clear all configuration data"""
+    config_manager.clear_all_data()
+    return jsonify({'success': True})
+
+@app.route('/api/generate', methods=['POST'])
+def generate_code():
+    print("DEBUG - /api/generate endpoint hit!", flush=True)
+    print(f"DEBUG - Request form data: {dict(request.form)}", flush=True)
+    print(f"DEBUG - Request files: {request.files}", flush=True)
+    
+    try:
+        # Get form data
+        api_key = request.form.get('apiKey')
+        model = request.form.get('model', 'gemini')
+        provider = request.form.get('provider', 'openrouter')
+        output_dir = request.form.get('outputDir', 'output')
+        prd_text = request.form.get('prdText', '')
+        max_tokens = request.form.get('maxTokens', '100000')
+        alibaba_key_index = request.form.get('alibabaKeyIndex', '0')  # New field for manual selection
+        
+        print(f"DEBUG - Received: model={model}, provider={provider}, output_dir={output_dir}", flush=True)
+        print(f"DEBUG - API key: {api_key[:10] if api_key else 'None'}...", flush=True)
+        print(f"DEBUG - ALIBABA_KEYS available: {len(ALIBABA_KEYS)}", flush=True)
+        
+        # Check if API key is needed (not needed for Alibaba models)
+        if model in ['qwen', 'qwen235']:
+            # Use built-in Alibaba keys
+            if not ALIBABA_KEYS:
+                return jsonify({'error': 'Alibaba API keys not configured in server. Please configure ALIBABA_API_KEY_1 environment variable or create config/ALIBABA-KEYS.json file.'}), 400
+            
+            # Manual key selection
+            try:
+                key_index = int(alibaba_key_index)
+                if 0 <= key_index < len(ALIBABA_KEYS):
+                    api_key = ALIBABA_KEYS[key_index]
+                    print(f"DEBUG - Using Alibaba key index {key_index}", flush=True)
+                else:
+                    return jsonify({'error': f'Invalid key index {key_index}. Available: 0-{len(ALIBABA_KEYS)-1}'}), 400
+            except ValueError:
+                api_key = ALIBABA_KEYS[0]  # Default to first key
+                print(f"DEBUG - Using default Alibaba key (index 0)", flush=True)
+        elif not api_key or api_key == 'built-in':
+            return jsonify({'error': f'Please provide API key for {model}'}), 400
+        
+        # Clean and validate the output directory path
+        output_dir = output_dir.strip('"').strip("'").strip()
+        
+        # Debug logging
+        print(f"DEBUG - Original output_dir: '{output_dir}'")
+        
+        # Replace forward slashes with backslashes for Windows consistency
+        output_dir = output_dir.replace('/', '\\')
+        
+        # Security: Prevent directory traversal
+        if '..' in output_dir:
+            return jsonify({'error': 'Invalid output directory path - directory traversal not allowed'}), 400
+        
+        # Don't validate paths too strictly - let the OS handle it
+        # Just ensure it's not empty
+        if not output_dir:
+            output_dir = 'output'  # Default to 'output' if empty
+            
+        print(f"DEBUG - Processed output_dir: '{output_dir}'")
+        
+        # Convert max_tokens to int
+        try:
+            max_tokens = int(max_tokens)
+        except:
+            max_tokens = 100000  # Default fallback
+        
+        # Handle file uploads
+        files = request.files.getlist('prdFiles')
+        
+        # Combine PRD content from files and text
+        combined_content = []
+        project_name = None
+        
+        # Add uploaded files content and try to extract project name
+        for file in files:
+            if file and file.filename:
+                content = file.read().decode('utf-8')
+                combined_content.append(f"=== File: {file.filename} ===\n{content}")
+                
+                # Try to extract project name from first file name if not set
+                if not project_name:
+                    project_name = os.path.splitext(file.filename)[0]
+                    # Clean up the project name
+                    project_name = project_name.replace(' ', '_').replace('-', '_')
+        
+        # Add pasted text if no files
+        if not combined_content and prd_text:
+            combined_content.append(prd_text)
+        
+        if not combined_content:
+            return jsonify({'error': 'No PRD content provided'}), 400
+        
+        # Combine all content
+        full_prd_content = "\n\n".join(combined_content)
+        
+        # If still no project name, try to extract from content or use default
+        if not project_name:
+            # Try to find project name in content
+            lines = full_prd_content.split('\n')
+            for line in lines[:20]:  # Check first 20 lines
+                if 'project' in line.lower() and ':' in line:
+                    potential_name = line.split(':')[-1].strip()
+                    if potential_name:
+                        project_name = potential_name.replace(' ', '_')
+                        break
+            
+            # Default name if still not found
+            if not project_name:
+                project_name = f"generated_project_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        
+        # Clean up project name
+        project_name = ''.join(c if c.isalnum() or c in '_-' else '_' for c in project_name)
+        
+        # Create appropriate client based on model
+        if model == 'gemini':
+            client = OpenRouterClient(api_key)
+        elif model == 'kimi':
+            client = MoonshotClient(api_key)
+        elif model in ['qwen', 'qwen235']:
+            # Map our model names to Alibaba model IDs
+            model_mapping = {
+                'qwen': 'qwen-plus',
+                'qwen235': 'qwen-max'
+            }
+            client = AlibabCloudClient(api_key)
+            client.model = model_mapping.get(model, 'qwen-plus')
+        else:
+            return jsonify({'error': f'Unsupported model: {model}'}), 400
+        
+        # Estimate tokens
+        estimated_input_tokens = client.estimate_tokens(full_prd_content)
+        
+        # Send request to selected AI model
+        print(f"Sending request to {model.upper()} model...")
+        print(f"DEBUG - About to send request with output_dir: '{output_dir}'")
+        
+        try:
+            response, token_info = client.send_prd_request(
+                full_prd_content, 
+                project_name, 
+                output_dir,
+                max_tokens
+            )
+            print(f"DEBUG - Got response: {bool(response)}")
+            if response:
+                print(f"DEBUG - Response length: {len(str(response))} chars")
+        except Exception as e:
+            print(f"ERROR - API call failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({'error': f'API call failed: {str(e)}'}), 500
+        
+        if not response:
+            return jsonify({'error': 'Failed to get response from API - empty response'}), 500
+        
+        # Create absolute path for output
+        abs_output_dir = os.path.abspath(output_dir)
+        print(f"DEBUG - Absolute path: '{abs_output_dir}'")
+        
+        # Validate the path
+        if not os.path.exists(abs_output_dir):
+            print(f"DEBUG - Directory doesn't exist, trying to create: '{abs_output_dir}'")
+            # Try to create it
+            try:
+                os.makedirs(abs_output_dir, exist_ok=True)
+                print(f"DEBUG - Successfully created directory: '{abs_output_dir}'")
+            except Exception as e:
+                print(f"DEBUG - Failed to create directory: {str(e)}")
+                return jsonify({'error': f'Invalid output directory: {str(e)}'}), 400
+        
+        # Create project directory
+        project_path = os.path.join(abs_output_dir, project_name)
+        
+        # If project already exists, add timestamp
+        if os.path.exists(project_path):
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            project_name = f"{project_name}_{timestamp}"
+            project_path = os.path.join(abs_output_dir, project_name)
+        
+        os.makedirs(project_path, exist_ok=True)
+        
+        # Parse JSON response
+        try:
+            # Handle both string and dict responses
+            if isinstance(response, str):
+                # Try to extract JSON from markdown code blocks
+                json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
+                if json_match:
+                    response_json = json.loads(json_match.group(1))
+                else:
+                    # Try to parse the entire response as JSON
+                    response_json = json.loads(response)
+            else:
+                response_json = response
+            
+            # Extract files from response
+            files_to_create = []
+            
+            # Check different possible structures
+            if 'files' in response_json:
+                files_to_create = response_json['files']
+            elif 'code_files' in response_json:
+                files_to_create = response_json['code_files']
+            elif isinstance(response_json, list):
+                files_to_create = response_json
+            else:
+                # Try to find files in any key that looks like it contains files
+                for key, value in response_json.items():
+                    if isinstance(value, list) and value and isinstance(value[0], dict) and 'filename' in value[0]:
+                        files_to_create = value
+                        break
+            
+            if not files_to_create:
+                return jsonify({'error': 'No files found in AI response'}), 500
+            
+            # Create each file
+            created_files = []
+            for file_info in files_to_create:
+                if isinstance(file_info, dict) and 'filename' in file_info and 'content' in file_info:
+                    filename = file_info['filename']
+                    content = file_info['content']
+                    
+                    # Create subdirectories if needed
+                    file_path = os.path.join(project_path, filename)
+                    file_dir = os.path.dirname(file_path)
+                    if file_dir and file_dir != project_path:
+                        os.makedirs(file_dir, exist_ok=True)
+                    
+                    # Write file
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(content)
+                    
+                    created_files.append(filename)
+                    print(f"Created: {filename}")
+            
+            print(f"\nSuccessfully created {len(created_files)} files in {project_path}")
+            
+        except json.JSONDecodeError as e:
+            print(f"Failed to parse JSON response: {e}")
+            # Save raw response for debugging
+            with open(os.path.join(project_path, '_raw_response.txt'), 'w', encoding='utf-8') as f:
+                f.write(str(response))
+            return jsonify({'error': 'Failed to parse AI response as JSON. Raw response saved.'}), 500
+        except Exception as e:
+            print(f"Error creating files: {e}")
+            return jsonify({'error': f'Failed to create project files: {str(e)}'}), 500
+        
+        # Save generation info
+        generation_info = {
+            'timestamp': datetime.now().isoformat(),
+            'model': model,
+            'provider': provider,
+            'project_name': project_name,
+            'files_created': created_files,
+            'token_info': token_info,
+            'estimated_input_tokens': estimated_input_tokens,
+            'output_directory': abs_output_dir
+        }
+        
+        with open(os.path.join(project_path, '_generation_info.json'), 'w', encoding='utf-8') as f:
+            json.dump(generation_info, f, indent=2)
+        
+        return jsonify({
+            'success': True,
+            'projectName': project_name,
+            'outputPath': project_path,
+            'filesCreated': len(created_files),
+            'tokenInfo': {
+                'actual_input': token_info.get('input_tokens', estimated_input_tokens),
+                'output': token_info.get('output_tokens', 0),
+                'total': token_info.get('total_tokens', estimated_input_tokens)
+            }
+        })
+        
+    except Exception as e:
+        import traceback
+        print(f"Error: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/estimate', methods=['POST'])
+def estimate_tokens():
+    try:
+        data = request.get_json()
+        content = data.get('content', '')
+        max_tokens = data.get('maxTokens', 100000)
+        model = data.get('model', 'gemini')
+        
+        # Create a temporary client just for estimation
+        if model == 'gemini':
+            from openrouter_client import OpenRouterClient
+            client = OpenRouterClient("dummy_key")  # Just for estimation
+        elif model == 'kimi':
+            from moonshot_client import MoonshotClient
+            client = MoonshotClient("dummy_key")  # Just for estimation
+        elif model in ['qwen', 'qwen235']:
+            # Use Alibaba client for estimation
+            client = AlibabCloudClient("dummy_key")
+        else:
+            client = OpenRouterClient("dummy_key")  # Default
+        
+        # Estimate tokens
+        estimated_tokens = client.estimate_tokens(content)
+        
+        # Calculate available output tokens
+        model_configs = {
+            'gemini': 2000000,  # 2M context
+            'kimi': 128000,     # 128K context
+            'qwen': 131072,     # 131K context
+            'qwen235': 32768    # 32K context
+        }
+        
+        model_limit = model_configs.get(model, 100000)
+        available_output = model_limit - estimated_tokens
+        
+        # Calculate estimated cost (rough estimates)
+        if model == 'kimi':
+            input_cost = estimated_tokens * 0.00015 / 1000  # $0.15 per 1M tokens
+        elif model in ['qwen', 'qwen235']:
+            input_cost = estimated_tokens * 0.0001 / 1000  # $0.10 per 1M tokens
+        else:
+            input_cost = estimated_tokens * 0.000075 / 1000  # $0.075 per 1M tokens
+        
+        return jsonify({
+            'contentSize': len(content),
+            'estimatedTokens': estimated_tokens,
+            'availableOutputTokens': min(available_output, max_tokens),
+            'estimatedInputCost': input_cost,
+            'model': model
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+if __name__ == '__main__':
+    print("PRD Generator Server starting...")
+    print("Access the UI at: http://localhost:5000")
+    print("Make sure you have your API keys ready!")
+    print("\nSupported models:")
+    print("- Gemini 2.5 Pro (via OpenRouter)")
+    print("- Kimi K2 (via Moonshot AI)")
+    print("- Qwen-Plus (via Alibaba Direct API) 🚀")
+    print("- Qwen-Max (via Alibaba Direct API) 🚀")
+    
+    # SECURITY: Set debug=False for production!
+    is_production = os.getenv('FLASK_ENV') == 'production'
+    app.run(debug=True, port=5000)  # Force debug=True for troubleshooting
+
+================================================================================
+FILE 2: index.html
+================================================================================
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PRD to Code Generator - Multi-Model Support</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Arial, sans-serif;
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+            position: relative;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #444;
+        }
+        input[type="text"],
+        input[type="number"],
+        textarea,
+        select {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        
+        /* Model selector styling */
+        .model-selector {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 25px;
+            border: 2px solid #e9ecef;
+        }
+        
+        .model-selector h3 {
+            margin-top: 0;
+            color: #495057;
+            font-size: 18px;
+        }
+        
+        .model-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        
+        .model-card {
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: white;
+        }
+        
+        .model-card:hover {
+            border-color: #2196F3;
+            box-shadow: 0 4px 12px rgba(33, 150, 243, 0.15);
+        }
+        
+        .model-card.selected {
+            border-color: #2196F3;
+            background: #e3f2fd;
+        }
+        
+        .model-card h4 {
+            margin: 0 0 8px 0;
+            color: #333;
+        }
+        
+        .model-card .model-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-bottom: 8px;
+        }
+        
+        .model-badge.new {
+            background: #4CAF50;
+            color: white;
+        }
+        
+        .model-badge.popular {
+            background: #FF9800;
+            color: white;
+        }
+        
+        .model-specs {
+            font-size: 13px;
+            color: #666;
+            line-height: 1.5;
+        }
+        
+        .model-price {
+            font-weight: bold;
+            color: #2196F3;
+            margin-top: 5px;
+        }
+        
+        /* API Key sections */
+        .api-key-section {
+            display: none;
+            margin-top: 15px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+            border: 1px solid #dee2e6;
+        }
+        
+        .api-key-section.active {
+            display: block;
+        }
+        
+        /* Special styling for output directory */
+        #outputDir {
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+            min-width: 600px;
+        }
+        
+        /* Custom path history dropdown */
+        .path-history {
+            position: absolute;
+            background: white;
+            border: 2px solid #ddd;
+            border-top: none;
+            border-radius: 0 0 5px 5px;
+            max-height: 300px;
+            overflow-y: auto;
+            z-index: 1000;
+            width: 100%;
+            min-width: 800px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        .path-item {
+            padding: 10px;
+            cursor: pointer;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+            border-bottom: 1px solid #f0f0f0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .path-item:hover {
+            background: #f5f5f5;
+        }
+        
+        .path-item:last-child {
+            border-bottom: none;
+        }
+        
+        .path-item-text {
+            flex: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            margin-right: 10px;
+            cursor: pointer;
+        }
+        
+        .path-item-text:hover {
+            overflow: visible;
+            background: #f0f0f0;
+            z-index: 10;
+            position: relative;
+            padding: 2px 5px;
+            border-radius: 3px;
+        }
+        
+        .path-item-remove {
+            color: #ff4444;
+            font-size: 20px;
+            font-weight: bold;
+            padding: 0 5px;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        
+        .path-item-remove:hover {
+            color: #cc0000;
+        }
+        
+        textarea {
+            min-height: 200px;
+            resize: vertical;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+        .file-upload {
+            position: relative;
+            display: inline-block;
+            cursor: pointer;
+            width: 100%;
+        }
+        .file-upload input[type="file"] {
+            position: absolute;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+        .file-upload-label {
+            display: block;
+            padding: 12px;
+            background: #4CAF50;
+            color: white;
+            text-align: center;
+            border-radius: 5px;
+            font-weight: 600;
+            transition: background 0.3s;
+        }
+        .file-upload-label:hover {
+            background: #45a049;
+        }
+        .button {
+            background: #2196F3;
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: 600;
+            width: 100%;
+            margin-top: 10px;
+        }
+        .button:hover {
+            background: #1976D2;
+        }
+        .button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .info-box {
+            background: #e3f2fd;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .success-box {
+            background: #e8f5e9;
+            border-left: 4px solid #4CAF50;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .error-box {
+            background: #ffebee;
+            border-left: 4px solid #f44336;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        .warning-box {
+            background: #fff3e0;
+            border-left: 4px solid #ff9800;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 5px;
+        }
+        #status {
+            margin-top: 20px;
+            display: none;
+        }
+        .instructions {
+            background: #f5f5f5;
+            padding: 20px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        .instructions h3 {
+            margin-top: 0;
+            color: #555;
+        }
+        .instructions ol {
+            color: #666;
+            line-height: 1.8;
+        }
+        code {
+            background: #e8e8e8;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+        .file-list {
+            background: #f8f8f8;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 10px;
+            margin-top: 10px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 5px;
+            margin: 2px 0;
+            background: white;
+            border-radius: 3px;
+        }
+        .file-item button {
+            background: #f44336;
+            color: white;
+            border: none;
+            padding: 2px 8px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .token-info {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 15px 0;
+            font-family: monospace;
+        }
+        .token-info h4 {
+            margin-top: 0;
+            color: #555;
+        }
+        .two-columns {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        @media (max-width: 600px) {
+            .two-columns {
+                grid-template-columns: 1fr;
+            }
+        }
+        .server-status {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 8px 15px;
+            border-radius: 5px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .server-online {
+            background: #4CAF50;
+            color: white;
+        }
+        .server-offline {
+            background: #f44336;
+            color: white;
+        }
+        
+        /* Path history styles */
+        .path-history {
+            margin-top: 5px;
+            max-height: 200px;
+            overflow-y: auto;
+            background: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        
+        .path-item {
+            padding: 10px 12px;
+            cursor: pointer;
+            border-bottom: 1px solid #eee;
+            font-size: 14px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            word-break: break-all;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .path-item:hover {
+            background: #e8f0fe;
+        }
+        
+        .path-item:last-child {
+            border-bottom: none;
+        }
+        
+        .path-item-text {
+            flex: 1;
+            margin-right: 10px;
+        }
+        
+        .path-item-remove {
+            color: #999;
+            cursor: pointer;
+            font-size: 18px;
+            padding: 0 5px;
+        }
+        
+        .path-item-remove:hover {
+            color: #f44336;
+        }
+        
+        .show-history-btn {
+            margin-top: 5px;
+            font-size: 12px;
+            color: #2196F3;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+        
+        /* Enhanced Error Modal */
+        .error-modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.7);
+        }
+
+        .error-modal-content {
+            background-color: #1e1e1e;
+            margin: 5% auto;
+            padding: 20px;
+            border: 1px solid #ff4444;
+            border-radius: 10px;
+            width: 90%;
+            max-width: 800px;
+            max-height: 80vh;
+            overflow-y: auto;
+            color: #ffffff;
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+
+        .close-modal {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        .close-modal:hover {
+            color: #fff;
+        }
+
+        .error-details-section {
+            background: #2d2d2d;
+            border: 1px solid #444;
+            border-radius: 5px;
+            padding: 15px;
+            margin: 10px 0;
+        }
+
+        .error-details-section h3 {
+            color: #ff6b6b;
+            margin-top: 0;
+        }
+
+        .error-prompt {
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 5px;
+            padding: 15px;
+            white-space: pre-wrap;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .error-actions {
+            margin-top: 20px;
+            text-align: center;
+        }
+
+        .copy-btn {
+            background: #238636 !important;
+        }
+
+        .copy-btn:hover {
+            background: #2ea043 !important;
+        }
+
+        .copy-success {
+            background: #1e7e34 !important;
+        }
+        
+        /* Alibaba notice styling */
+        .alibaba-notice {
+            background: #e3f2fd;
+            padding: 15px;
+            border-radius: 5px;
+            color: #1976D2;
+            font-weight: 500;
+        }
+        
+        /* Enhanced directory picker */
+        .directory-picker-modal {
+            display: none;
+            position: fixed;
+            z-index: 1001;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+        }
+        
+        .directory-picker-content {
+            background-color: #fefefe;
+            margin: 10% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            border-radius: 8px;
+            width: 80%;
+            max-width: 600px;
+            max-height: 60vh;
+            overflow-y: auto;
+        }
+        
+        .directory-input-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        .directory-input-wrapper {
+            flex: 1;
+        }
+        
+        .browse-btn {
+            background: #FF9800;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        
+        .browse-btn:hover {
+            background: #F57C00;
+        }
+        
+        .quick-directories {
+            margin-top: 10px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+            border: 1px solid #dee2e6;
+        }
+        
+        .quick-directories h4 {
+            margin-top: 0;
+            color: #495057;
+            font-size: 14px;
+        }
+        
+        .quick-dir-item {
+            padding: 8px 12px;
+            margin: 5px 0;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            cursor: pointer;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        
+        .quick-dir-item:hover {
+            background: #e3f2fd;
+            border-color: #2196F3;
+        }
+    </style>
+</head>
+<body>
+    <div id="serverStatus" class="server-status server-offline">Server Offline</div>
+    
+    <div class="container">
+        <h1>🚀 PRD to Code Generator</h1>
+        <p class="subtitle">Multi-Model Support: Gemini 2.5 Pro, Kimi K2, Qwen-Plus & Qwen-Max</p>
+        
+        <div class="instructions">
+            <h3>📋 How to use:</h3>
+            <ol>
+                <li>Make sure the backend server is running: <code>python app.py</code></li>
+                <li>Select your preferred AI model (Gemini, Kimi K2, Qwen3-Coder 32B, or Qwen3-235B-A22B)</li>
+                <li>Enter your API key for the selected model (Qwen models use built-in keys)</li>
+                <li>Upload one or multiple PRD files</li>
+                <li>Choose output directory</li>
+                <li>Review token estimation</li>
+                <li>Click "Generate Code" and wait for AI to create your project!</li>
+            </ol>
+        </div>
+
+        <!-- Model Selection -->
+        <div class="model-selector">
+            <h3>🤖 Select AI Model</h3>
+            <div class="model-grid">
+                <div class="model-card" id="gemini-card" onclick="selectModel('gemini')">
+                    <h4>Gemini 2.5 Pro</h4>
+                    <span class="model-badge popular">Popular</span>
+                    <div class="model-specs">
+                        <div>✅ Provider: Google (via OpenRouter)</div>
+                        <div>✅ Context: 2M tokens</div>
+                        <div>✅ Speed: Very Fast</div>
+                        <div>✅ Great for: General code generation</div>
+                        <div class="model-price">$0.075/1M input • $0.30/1M output</div>
+                    </div>
+                </div>
+                
+                <div class="model-card" id="kimi-card" onclick="selectModel('kimi')">
+                    <h4>Kimi K2</h4>
+                    <span class="model-badge new">NEW</span>
+                    <div class="model-specs">
+                        <div>✅ Provider: Moonshot AI (Direct)</div>
+                        <div>✅ Context: 128K tokens</div>
+                        <div>✅ Parameters: 1T total / 32B active</div>
+                        <div>✅ Best for: Complex coding & agents</div>
+                        <div class="model-price">$0.15/1M input • $2.50/1M output</div>
+                    </div>
+                </div>
+                
+                <div class="model-card" id="qwen-card" onclick="selectModel('qwen')">
+                    <h4>Qwen3-Coder 32B</h4>
+                    <span class="model-badge new">NEW</span>
+                    <div class="model-specs">
+                        <div>✅ Provider: Alibaba Direct API</div>
+                        <div>✅ Parameters: 32B</div>
+                        <div>✅ Context: 131K tokens</div>
+                        <div>✅ Best for: Code generation</div>
+                        <div class="model-price">$0.10/1M input • $0.40/1M output</div>
+                    </div>
+                </div>
+                
+                <div class="model-card" id="qwen235-card" onclick="selectModel('qwen235')">
+                    <h4>Qwen3-235B-A22B</h4>
+                    <span class="model-badge popular">Flagship</span>
+                    <div class="model-specs">
+                        <div>✅ Provider: Alibaba Direct API</div>
+                        <div>✅ Parameters: 235B total / 22B active</div>
+                        <div>✅ Context: 256K tokens</div>
+                        <div>✅ Best for: Most complex tasks</div>
+                        <div class="model-price">$0.15/1M input • $0.60/1M output</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <form id="prdForm">
+            <!-- OpenRouter API Key (for Gemini) -->
+            <div class="api-key-section" id="gemini-api-section">
+                <div class="form-group">
+                    <label for="openrouterApiKey">OpenRouter API Key:</label>
+                    <input type="text" id="openrouterApiKey" name="openrouterApiKey" placeholder="sk-or-...">
+                    <small style="color: #7c8a97; display: block; margin-top: 5px;">
+                        Get your key at <a href="https://openrouter.ai/keys" target="_blank">openrouter.ai</a>
+                    </small>
+                </div>
+            </div>
+
+            <!-- Moonshot API Key (for Kimi K2) -->
+            <div class="api-key-section" id="kimi-api-section">
+                <div class="form-group">
+                    <label for="moonshotApiKey">Moonshot API Key:</label>
+                    <input type="text" id="moonshotApiKey" name="moonshotApiKey" placeholder="sk-...">
+                    <small style="color: #7c8a97; display: block; margin-top: 5px;">
+                        Get your key at <a href="https://platform.moonshot.ai" target="_blank">platform.moonshot.ai</a>
+                    </small>
+                </div>
+            </div>
+            
+            <!-- Alibaba Direct API Notice (for Qwen models) -->
+            <div class="api-key-section" id="alibaba-api-section">
+                <div class="alibaba-notice">
+                    ✅ Using Alibaba Direct API with built-in API keys<br>
+                    <small>No additional API key required - keys are configured in server</small>
+                </div>
+                
+                <!-- Manual Key Selection -->
+                <div class="form-group" style="margin-top: 15px;">
+                    <label for="alibabaKeySelect">Select API Key (Manual):</label>
+                    <select id="alibabaKeySelect" name="alibabaKeySelect" style="width: 100%; padding: 10px; font-size: 14px;">
+                        <option value="0">Key 1 (sk-220d8834...)</option>
+                        <option value="1">Key 2 (sk-f2cc71cc...)</option>
+                        <option value="2">Key 3 (sk-3f14a4b1...)</option>
+                    </select>
+                    <small style="color: #7c8a97; display: block; margin-top: 5px;">
+                        💡 Manual selection - choose which API key to use
+                    </small>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label for="outputDir">Output Directory (project folder will be created here):</label>
+                <div class="directory-input-group">
+                    <div class="directory-input-wrapper">
+                        <input type="text" id="outputDir" name="outputDir" placeholder="C:\Users\NCPC\Documents\MYRAY FACTORY" value="output" list="recentPaths">
+                        <datalist id="recentPaths"></datalist>
+                        <div id="pathHistory" class="path-history" style="display: none;"></div>
+                    </div>
+                    <button type="button" class="browse-btn" onclick="showDirectoryPicker()">
+                        📁 Browse
+                    </button>
+                </div>
+                <small style="color: #7c8a97; display: block; margin-top: 5px;">
+                    💡 Leave as "output" for default, or enter full path like C:\Projects
+                </small>
+            </div>
+
+            <div class="form-group">
+                <label for="maxTokens">Max Output Tokens:</label>
+                <input type="number" id="maxTokens" name="maxTokens" value="100000" min="1000" max="2000000" required>
+                <small style="color: #7c8a97; display: block; margin-top: 5px;">
+                    💡 Maximum tokens for AI response (adjust based on selected model)
+                </small>
+            </div>
+
+            <div class="form-group">
+                <label>PRD Files (supports multiple files):</label>
+                <div class="file-upload" style="margin-bottom: 15px;">
+                    <input type="file" id="prdFiles" name="prdFiles" accept=".txt,.md,.doc,.docx" multiple>
+                    <label for="prdFiles" class="file-upload-label">
+                        📁 Choose PRD Files (or drag & drop)
+                    </label>
+                </div>
+                <div id="fileList" class="file-list" style="display: none;"></div>
+                
+                <p style="text-align: center; color: #666; margin: 10px 0;">— OR —</p>
+                
+                <label for="prdText">Paste PRD Text:</label>
+                <textarea id="prdText" name="prdText" placeholder="Enter your PRD content here...
+
+# AI Gateway MCP Server - Product Requirements Document
+
+## Overview
+AI Gateway is a production-ready MCP server that provides a unified interface for managing and accessing multiple AI providers including OpenRouter, Anthropic, Google, OpenAI, Groq, and local Ollama models.
+
+## Objectives
+Create a robust, scalable MCP server that centralizes AI model access with manual control by default while supporting both API keys and environment variables..."></textarea>
+            </div>
+
+            <div id="tokenEstimation" class="token-info" style="display: none;">
+                <h4>📊 Token Estimation:</h4>
+                <div id="tokenDetails"></div>
+            </div>
+
+            <button type="button" class="button" id="estimateBtn" style="background: #FF9800;">
+                🔍 Estimate Tokens
+            </button>
+
+            <button type="submit" class="button" id="submitBtn">
+                🔮 Generate Code with <span id="submitBtnModel">Gemini</span>
+            </button>
+        </form>
+
+        <div id="status"></div>
+
+        <!-- Enhanced Error Modal -->
+        <div id="errorModal" class="error-modal" style="display: none;">
+            <div class="error-modal-content">
+                <span class="close-modal" onclick="closeErrorModal()">&times;</span>
+                <h2>🚨 Detailed Error Report</h2>
+                <div id="errorDetails"></div>
+                <div class="error-actions">
+                    <button class="button copy-btn" onclick="copyErrorToClipboard()">📋 Copy for Claude</button>
+                    <button class="button" onclick="downloadErrorLog()">💾 Download Log</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Directory Picker Modal -->
+        <div id="directoryPickerModal" class="directory-picker-modal">
+            <div class="directory-picker-content">
+                <h3>📁 Select Output Directory</h3>
+                <div class="form-group">
+                    <label>Enter directory path:</label>
+                    <input type="text" id="modalDirInput" placeholder="C:\Users\NCPC\Documents\MYRAY FACTORY" style="width: 100%;">
+                </div>
+                <div class="quick-directories" id="recentDirectories" style="display: none;">
+                    <h4>Recent Directories:</h4>
+                    <!-- Will be populated dynamically -->
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- Include file-based storage instead of localStorage -->
+    <script src="config-storage.js"></script>
+    <script>
+        let selectedFiles = [];
+        let selectedModel = 'gemini'; // Default model
+        const API_URL = 'http://localhost:5000';
+        
+        // Model configurations
+        const modelConfigs = {
+            gemini: {
+                name: 'Gemini 2.5 Pro',
+                provider: 'openrouter',
+                maxTokens: 900000,
+                defaultTokens: 900000,
+                apiKeyField: 'openrouterApiKey',
+                apiSection: 'gemini-api-section'
+            },
+            kimi: {
+                name: 'Kimi K2',
+                provider: 'moonshot',
+                maxTokens: 128000,
+                defaultTokens: 100000,
+                apiKeyField: 'moonshotApiKey',
+                apiSection: 'kimi-api-section'
+            },
+            qwen: {
+                name: 'Qwen3-Coder',
+                provider: 'alibaba',
+                maxTokens: 131072,
+                defaultTokens: 32000,
+                apiKeyField: 'alibabaApiKey',
+                apiSection: 'alibaba-api-section'
+            },
+            qwen235: {
+                name: 'Qwen3-235B',
+                provider: 'alibaba',
+                maxTokens: 256000,
+                defaultTokens: 50000,
+                apiKeyField: 'alibabaApiKey',
+                apiSection: 'alibaba-api-section'
+            }
+        };
+        
+        // Directory Picker Functions
+        function showDirectoryPicker() {
+            const modal = document.getElementById('directoryPickerModal');
+            modal.style.display = 'block';
+            
+            // Load and display recent directories
+            loadRecentDirectoriesInPicker();
+        }
+        
+        function loadRecentDirectoriesInPicker() {
+            loadSavedPaths().then(paths => {
+                const recentDirsDiv = document.getElementById('recentDirectories');
+                if (paths.length > 0) {
+                    recentDirsDiv.style.display = 'block';
+                    recentDirsDiv.innerHTML = '<h4>Recent Directories:</h4>';
+                    
+                    paths.slice(0, 5).forEach(path => {
+                        const dirItem = document.createElement('div');
+                        dirItem.className = 'quick-dir-item';
+                        dirItem.textContent = path;
+                        dirItem.onclick = function() {
+                            document.getElementById('outputDir').value = path;
+                            closeDirectoryPicker();
+                        };
+                        recentDirsDiv.appendChild(dirItem);
+                    });
+                }
+            });
+        }
+        
+        function closeDirectoryPicker() {
+            document.getElementById('directoryPickerModal').style.display = 'none';
+        }
+        
+        // Initialize model selection
+        function initializeModelSelection() {
+            // Load saved model preference
+            loadSettings().then(settings => {
+                const savedModel = settings.selected_model || 'gemini';
+                selectModel(savedModel);
+            });
+        }
+        
+        // Select model
+        function selectModel(model) {
+            selectedModel = model;
+            saveSettings({ selected_model: model });
+            
+            // Update UI
+            document.querySelectorAll('.model-card').forEach(card => {
+                card.classList.remove('selected');
+            });
+            document.getElementById(`${model}-card`).classList.add('selected');
+            
+            // Show appropriate API key section
+            document.querySelectorAll('.api-key-section').forEach(section => {
+                section.classList.remove('active');
+            });
+            document.getElementById(modelConfigs[model].apiSection).classList.add('active');
+            
+            // Update submit button text
+            document.getElementById('submitBtnModel').textContent = modelConfigs[model].name;
+            
+            // Update max tokens based on model
+            const maxTokensInput = document.getElementById('maxTokens');
+            maxTokensInput.max = modelConfigs[model].maxTokens;
+            if (parseInt(maxTokensInput.value) > modelConfigs[model].maxTokens) {
+                maxTokensInput.value = modelConfigs[model].defaultTokens;
+            }
+            
+            // Update token field placeholder
+            maxTokensInput.placeholder = `Max ${modelConfigs[model].maxTokens.toLocaleString()} for ${modelConfigs[model].name}`;
+        }
+        
+        // Check server status
+        async function checkServerStatus() {
+            try {
+                const response = await fetch(`${API_URL}/health`);
+                if (response.ok) {
+                    document.getElementById('serverStatus').className = 'server-status server-online';
+                    document.getElementById('serverStatus').textContent = 'Server Online';
+                    return true;
+                }
+            } catch (error) {
+                captureErrorDetails(error, 'Server Status Check');
+                document.getElementById('serverStatus').className = 'server-status server-offline';
+                document.getElementById('serverStatus').textContent = 'Server Offline';
+                return false;
+            }
+        }
+        
+        // Check server status on load and periodically
+        checkServerStatus();
+        setInterval(checkServerStatus, 5000);
+        
+        // Handle file upload
+        const fileInput = document.getElementById('prdFiles');
+        const textArea = document.getElementById('prdText');
+        const fileLabel = document.querySelector('.file-upload-label');
+        const fileList = document.getElementById('fileList');
+        
+        fileInput.addEventListener('change', handleFileSelect);
+        
+        function handleFileSelect(e) {
+            selectedFiles = Array.from(e.target.files);
+            updateFileList();
+            combineFilesContent();
+        }
+        
+        function updateFileList() {
+            fileList.innerHTML = '';
+            fileList.style.display = selectedFiles.length > 0 ? 'block' : 'none';
+            
+            selectedFiles.forEach((file, index) => {
+                const item = document.createElement('div');
+                item.className = 'file-item';
+                item.innerHTML = `
+                    <span>${file.name} (${(file.size / 1024).toFixed(2)} KB)</span>
+                    <button type="button" onclick="removeFile(${index})">Remove</button>
+                `;
+                fileList.appendChild(item);
+            });
+            
+            fileLabel.textContent = selectedFiles.length > 0 
+                ? `📄 ${selectedFiles.length} file(s) selected` 
+                : '📁 Choose PRD Files (or drag & drop)';
+            
+            // Update file input
+            const dt = new DataTransfer();
+            selectedFiles.forEach(file => dt.items.add(file));
+            fileInput.files = dt.files;
+        }
+        
+        window.removeFile = function(index) {
+            selectedFiles.splice(index, 1);
+            updateFileList();
+            combineFilesContent();
+        }
+        
+        function combineFilesContent() {
+            if (selectedFiles.length === 0) {
+                textArea.value = '';
+                return;
+            }
+            
+            let contents = [];
+            let filesRead = 0;
+            
+            selectedFiles.forEach((file, index) => {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    contents[index] = `=== File: ${file.name} ===\n${e.target.result}`;
+                    filesRead++;
+                    
+                    if (filesRead === selectedFiles.length) {
+                        textArea.value = contents.join('\n\n');
+                    }
+                };
+                reader.readAsText(file);
+            });
+        }
+        
+        // Handle drag and drop
+        const fileUpload = document.querySelector('.file-upload');
+        
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            fileUpload.addEventListener(eventName, preventDefaults, false);
+        });
+        
+        function preventDefaults(e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        
+        ['dragenter', 'dragover'].forEach(eventName => {
+            fileUpload.addEventListener(eventName, highlight, false);
+        });
+        
+        ['dragleave', 'drop'].forEach(eventName => {
+            fileUpload.addEventListener(eventName, unhighlight, false);
+        });
+        
+        function highlight(e) {
+            fileUpload.style.opacity = '0.8';
+        }
+        
+        function unhighlight(e) {
+            fileUpload.style.opacity = '1';
+        }
+        
+        fileUpload.addEventListener('drop', handleDrop, false);
+        
+        function handleDrop(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            
+            if (files.length > 0) {
+                selectedFiles = Array.from(files);
+                updateFileList();
+                combineFilesContent();
+            }
+        }
+        
+        // Token estimation
+        document.getElementById('estimateBtn').addEventListener('click', async function() {
+            const content = document.getElementById('prdText').value;
+            if (!content.trim()) {
+                showStatus('Please upload files or enter PRD content first!', 'error');
+                return;
+            }
+            
+            const isOnline = await checkServerStatus();
+            if (!isOnline) {
+                showStatus('Server is offline. Please run: python app.py', 'error');
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_URL}/api/estimate`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        content,
+                        maxTokens: parseInt(document.getElementById('maxTokens').value) || modelConfigs[selectedModel].defaultTokens,
+                        model: selectedModel
+                    })
+                });
+                
+                const data = await response.json();
+                
+                const tokenDiv = document.getElementById('tokenEstimation');
+                const tokenDetails = document.getElementById('tokenDetails');
+                
+                // Get model pricing
+                const pricing = selectedModel === 'kimi' ? 
+                    { input: 0.00015, output: 0.0025 } : 
+                    selectedModel === 'qwen' ?
+                    { input: 0.0001, output: 0.0004 } :
+                    selectedModel === 'qwen235' ?
+                    { input: 0.00015, output: 0.0006 } :
+                    { input: 0.000075, output: 0.0003 };
+                
+                tokenDetails.innerHTML = `
+                    <strong>Model:</strong> ${modelConfigs[selectedModel].name}<br>
+                    <strong>Content size:</strong> ${data.contentSize.toLocaleString()} characters<br>
+                    <strong>Estimated input tokens:</strong> ${data.estimatedTokens.toLocaleString()}<br>
+                    <strong>Max output tokens:</strong> ${(parseInt(document.getElementById('maxTokens').value) || modelConfigs[selectedModel].defaultTokens).toLocaleString()}<br>
+                    <strong>Available output tokens:</strong> ${data.availableOutputTokens.toLocaleString()}<br>
+                    <strong>Estimated input cost:</strong> $${(data.estimatedTokens * pricing.input / 1000).toFixed(4)}<br>
+                    <strong>Max output cost:</strong> $${(parseInt(document.getElementById('maxTokens').value) * pricing.output / 1000).toFixed(4)}<br>
+                    <small style="color: #666;">Note: Actual costs may vary based on usage</small>
+                `;
+                
+                tokenDiv.style.display = 'block';
+                
+                if (data.estimatedTokens > modelConfigs[selectedModel].maxTokens * 0.8) {
+                    showStatus(`Warning: PRD is very large (${data.estimatedTokens.toLocaleString()} tokens). Consider splitting into smaller files.`, 'warning');
+                }
+            } catch (error) {
+                captureErrorDetails(error, 'Token Estimation');
+                showStatus('Error estimating tokens: ' + error.message, 'error');
+            }
+        });
+
+        // Form submission
+        document.getElementById('prdForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const isOnline = await checkServerStatus();
+            if (!isOnline) {
+                showStatus('Server is offline. Please run: python app.py', 'error');
+                return;
+            }
+            
+            // Get the appropriate API key
+            const apiKeyField = modelConfigs[selectedModel].apiKeyField;
+            let apiKey = '';
+            
+            // For Alibaba models, use a dummy key since real keys are in server
+            if (modelConfigs[selectedModel].provider === 'alibaba') {
+                apiKey = 'built-in';
+            } else {
+                apiKey = document.getElementById(apiKeyField).value;
+                if (!apiKey) {
+                    showStatus(`Please enter your ${modelConfigs[selectedModel].name} API key`, 'error');
+                    return;
+                }
+            }
+            
+            const formData = new FormData();
+            formData.append('apiKey', apiKey);
+            formData.append('model', selectedModel);
+            formData.append('provider', modelConfigs[selectedModel].provider);
+            formData.append('outputDir', document.getElementById('outputDir').value || 'output');
+            formData.append('maxTokens', document.getElementById('maxTokens').value || modelConfigs[selectedModel].defaultTokens.toString());
+            formData.append('prdText', document.getElementById('prdText').value);
+            
+            // Add Alibaba key index if using Qwen models
+            if (modelConfigs[selectedModel].provider === 'alibaba') {
+                formData.append('alibabaKeyIndex', document.getElementById('alibabaKeySelect').value || '0');
+            }
+            
+            // Add files
+            selectedFiles.forEach(file => {
+                formData.append('prdFiles', file);
+            });
+            
+            const submitBtn = document.getElementById('submitBtn');
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = `⏳ Generating code with ${modelConfigs[selectedModel].name}... (this may take 30-60 seconds)`;
+            
+            showStatus(`Processing... Sending to ${modelConfigs[selectedModel].name}`, 'info');
+            
+            try {
+                console.log('Sending request to:', `${API_URL}/api/generate`);
+                console.log('FormData contents:');
+                for (let [key, value] of formData.entries()) {
+                    console.log(`  ${key}:`, value);
+                }
+                
+                const response = await fetch(`${API_URL}/api/generate`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                console.log('Response status:', response.status);
+                console.log('Response data:', data);
+                
+                if (response.ok && data.success) {
+                    const tokenInfo = data.tokenInfo || {};
+                    const pricing = selectedModel === 'kimi' ? 
+                        { input: 0.00015, output: 0.0025 } : 
+                        selectedModel === 'qwen' ?
+                        { input: 0.0001, output: 0.0004 } :
+                        selectedModel === 'qwen235' ?
+                        { input: 0.00015, output: 0.0006 } :
+                        { input: 0.000075, output: 0.0003 };
+                    
+                    const totalCost = (tokenInfo.actual_input * pricing.input / 1000) + 
+                                    (tokenInfo.output * pricing.output / 1000);
+                    
+                    showStatus(`
+                        <strong>✅ Success!</strong><br>
+                        Project "<strong>${data.projectName}</strong>" has been generated.<br><br>
+                        <strong>🤖 Model Used:</strong> ${modelConfigs[selectedModel].name}<br>
+                        <strong>📊 Final Token Usage:</strong><br>
+                        - Input tokens: ${tokenInfo.actual_input?.toLocaleString() || 'N/A'}<br>
+                        - Output tokens: ${tokenInfo.output?.toLocaleString() || 'N/A'}<br>
+                        - Total tokens: ${tokenInfo.total?.toLocaleString() || 'N/A'}<br>
+                        - Total cost: $${totalCost.toFixed(4)}<br><br>
+                        <strong>📁 Output location:</strong><br>
+                        <code>${data.outputPath}</code><br><br>
+                        <strong>Next steps:</strong><br>
+                        1. Check the <code>_generation_info.json</code> file for details<br>
+                        2. Review the generated code and documentation<br>
+                        3. Follow the README.md for setup instructions
+                    `, 'success');
+                    
+                    // Save path to history
+                    const path = document.getElementById('outputDir').value.trim();
+                    savePathToHistory(path);
+                } else {
+                    showStatus(`Error: ${data.error || 'Unknown error occurred'}`, 'error');
+                }
+            } catch (error) {
+                captureErrorDetails(error, 'Code Generation');
+                showStatus('Error: ' + error.message, 'error');
+            } finally {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = `🔮 Generate Code with <span id="submitBtnModel">${modelConfigs[selectedModel].name}</span>`;
+            }
+        });
+        
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.className = type === 'error' ? 'error-box' : 
+                               type === 'success' ? 'success-box' : 
+                               type === 'warning' ? 'warning-box' : 'info-box';
+            statusDiv.innerHTML = message;
+            statusDiv.style.display = 'block';
+            
+            // For errors, show additional button to view details
+            if (type === 'error') {
+                statusDiv.innerHTML += '<br><br><button class="button" onclick="showErrorModal()">📋 View Detailed Error</button>';
+            }
+        }
+        
+        // Enhanced error handling system
+        let lastErrorDetails = null;
+
+        function captureErrorDetails(error, context) {
+            const timestamp = new Date().toISOString();
+            const browserInfo = {
+                userAgent: navigator.userAgent,
+                platform: navigator.platform,
+                language: navigator.language,
+                cookieEnabled: navigator.cookieEnabled,
+                onLine: navigator.onLine
+            };
+            
+            // Get form data
+            const apiKeyField = modelConfigs[selectedModel].apiKeyField;
+            const formData = {
+                model: selectedModel,
+                apiKey: document.getElementById(apiKeyField).value ? 'Present (hidden)' : 'Missing',
+                outputDir: document.getElementById('outputDir').value || 'Not specified',
+                maxTokens: document.getElementById('maxTokens').value || 'Not specified',
+                prdTextLength: document.getElementById('prdText').value.length,
+                filesUploaded: selectedFiles.length
+            };
+            
+            // Create detailed error object
+            lastErrorDetails = {
+                timestamp,
+                context,
+                error: {
+                    message: error.message || error,
+                    stack: error.stack || 'No stack trace available',
+                    type: error.name || 'Unknown Error'
+                },
+                formData,
+                browserInfo,
+                serverStatus: document.getElementById('serverStatus').textContent,
+                projectPath: 'C:\\Users\\NCPC\\Documents\\MYRAY FACTORY\\PRD-Generator'
+            };
+            
+            return lastErrorDetails;
+        }
+
+        function formatErrorForClaudePrompt(details) {
+            return `I need help debugging my PRD Generator error.
+
+## Error Context
+**Location**: C:\\Users\\NCPC\\Documents\\MYRAY FACTORY\\PRD-Generator
+**Timestamp**: ${details.timestamp}
+**Operation**: ${details.context}
+**Server Status**: ${details.serverStatus}
+**Model Selected**: ${details.formData.model}
+
+## Error Details
+**Error Type**: ${details.error.type}
+**Error Message**: ${details.error.message}
+
+## Stack Trace
+\`\`\`
+${details.error.stack}
+\`\`\`
+
+## Form Data at Time of Error
+- Model: ${details.formData.model}
+- API Key: ${details.formData.apiKey}
+- Output Directory: ${details.formData.outputDir}
+- Max Tokens: ${details.formData.maxTokens}
+- PRD Text Length: ${details.formData.prdTextLength} characters
+- Files Uploaded: ${details.formData.filesUploaded}
+
+## System Information
+- User Agent: ${details.browserInfo.userAgent}
+- Platform: ${details.browserInfo.platform}
+- Online: ${details.browserInfo.onLine}
+
+## Files to Check
+Please use desktop-commander to:
+1. read_file "C:\\Users\\NCPC\\Documents\\MYRAY FACTORY\\PRD-Generator\\app.py"
+2. search_code pattern="${details.error.message.substring(0, 20)}" path="C:\\Users\\NCPC\\Documents\\MYRAY FACTORY\\PRD-Generator"
+3. Check Python terminal for server-side errors
+
+## What I Was Trying To Do
+[Please add what specific action you were performing when this error occurred]
+
+Please help me identify and fix this error.`;
+        }
+
+        function showErrorModal() {
+            if (!lastErrorDetails) return;
+            
+            const modal = document.getElementById('errorModal');
+            const detailsDiv = document.getElementById('errorDetails');
+            
+            detailsDiv.innerHTML = `
+                <div class="error-details-section">
+                    <h3>📍 Error Summary</h3>
+                    <p><strong>Time:</strong> ${lastErrorDetails.timestamp}</p>
+                    <p><strong>Context:</strong> ${lastErrorDetails.context}</p>
+                    <p><strong>Message:</strong> ${lastErrorDetails.error.message}</p>
+                    <p><strong>Model:</strong> ${lastErrorDetails.formData.model}</p>
+                </div>
+                
+                <div class="error-details-section">
+                    <h3>📊 System State</h3>
+                    <p><strong>Server:</strong> ${lastErrorDetails.serverStatus}</p>
+                    <p><strong>API Key:</strong> ${lastErrorDetails.formData.apiKey}</p>
+                    <p><strong>Output Dir:</strong> ${lastErrorDetails.formData.outputDir}</p>
+                    <p><strong>Max Tokens:</strong> ${lastErrorDetails.formData.maxTokens}</p>
+                    <p><strong>PRD Size:</strong> ${lastErrorDetails.formData.prdTextLength} chars</p>
+                </div>
+                
+                <div class="error-details-section">
+                    <h3>🔍 Stack Trace</h3>
+                    <pre style="overflow-x: auto;">${lastErrorDetails.error.stack}</pre>
+                </div>
+                
+                <div class="error-details-section">
+                    <h3>📋 Claude-Ready Debug Prompt</h3>
+                    <div class="error-prompt" id="claudePrompt">${formatErrorForClaudePrompt(lastErrorDetails)}</div>
+                </div>
+            `;
+            
+            modal.style.display = 'block';
+        }
+
+        function closeErrorModal() {
+            document.getElementById('errorModal').style.display = 'none';
+        }
+
+        function copyErrorToClipboard() {
+            const promptText = formatErrorForClaudePrompt(lastErrorDetails);
+            navigator.clipboard.writeText(promptText).then(() => {
+                const btn = event.target;
+                btn.textContent = '✅ Copied!';
+                btn.classList.add('copy-success');
+                setTimeout(() => {
+                    btn.textContent = '📋 Copy for Claude';
+                    btn.classList.remove('copy-success');
+                }, 2000);
+            });
+        }
+
+        function downloadErrorLog() {
+            const logContent = JSON.stringify(lastErrorDetails, null, 2);
+            const blob = new Blob([logContent], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `prd_error_${lastErrorDetails.timestamp.replace(/[:.]/g, '-')}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        // Close modal when clicking outside
+        window.onclick = function(event) {
+            const modal = document.getElementById('errorModal');
+            const dirModal = document.getElementById('directoryPickerModal');
+            if (event.target === modal) {
+                closeErrorModal();
+            }
+            if (event.target === dirModal) {
+                closeDirectoryPicker();
+            }
+        }
+        
+        // Path history management
+        const outputDirInput = document.getElementById('outputDir');
+        const pathHistoryDiv = document.getElementById('pathHistory');
+        const recentPathsDatalist = document.getElementById('recentPaths');
+        const MAX_PATHS = 20;
+        
+        // Save path to history
+        function savePathToHistory(path) {
+            if (!path || path === 'output') return;
+            
+            savePathHistory(path).then(() => {
+                updatePathDisplay();
+            });
+        }
+        
+        // Update path display
+        function updatePathDisplay() {
+            loadSavedPaths().then(paths => {
+                // Update datalist for native suggestions
+                recentPathsDatalist.innerHTML = '';
+                paths.forEach(path => {
+                    const option = document.createElement('option');
+                    option.value = path;
+                    recentPathsDatalist.appendChild(option);
+                });
+                
+                // Update custom path history
+                pathHistoryDiv.innerHTML = '';
+                if (paths.length > 0) {
+                    paths.forEach((path, index) => {
+                        const pathItem = document.createElement('div');
+                        pathItem.className = 'path-item';
+                        pathItem.innerHTML = `
+                            <span class="path-item-text" title="${path}">${path}</span>
+                            <span class="path-item-remove" onclick="removePath(${index})">&times;</span>
+                        `;
+                        pathItem.querySelector('.path-item-text').onclick = function() {
+                            outputDirInput.value = path;
+                            pathHistoryDiv.style.display = 'none';
+                        };
+                        pathHistoryDiv.appendChild(pathItem);
+                    });
+                }
+            });
+        }
+        
+        // Remove path from history
+        window.removePath = function(index) {
+            removePathFromHistory(index).then(() => {
+                updatePathDisplay();
+            });
+            event.stopPropagation();
+        };
+        
+        // Show/hide path history on focus
+        outputDirInput.addEventListener('focus', function() {
+            loadSavedPaths().then(paths => {
+                if (paths.length > 0) {
+                    pathHistoryDiv.style.display = 'block';
+                }
+            });
+        });
+        
+        // Hide on blur (with delay for clicks)
+        outputDirInput.addEventListener('blur', function() {
+            setTimeout(() => {
+                pathHistoryDiv.style.display = 'none';
+            }, 200);
+        });
+        
+        // Initialize path display
+        updatePathDisplay();
+        
+        // Add a button to show history
+        const showHistoryBtn = document.createElement('div');
+        showHistoryBtn.className = 'show-history-btn';
+        showHistoryBtn.textContent = '📁 Show recent paths';
+        showHistoryBtn.onclick = function() {
+            loadSavedPaths().then(paths => {
+                if (paths.length > 0) {
+                    pathHistoryDiv.style.display = pathHistoryDiv.style.display === 'none' ? 'block' : 'none';
+                }
+            });
+        };
+        outputDirInput.parentElement.parentElement.appendChild(showHistoryBtn);
+        
+        // Initialize model selection on page load
+        initializeModelSelection();
+        
+        // Load path history on page load
+        updatePathDisplay();
+        
+        // Handle Alibaba key selection preference
+        const alibabaKeySelect = document.getElementById('alibabaKeySelect');
+        
+        // Load saved preference
+        const savedKeyIndex = localStorage.getItem('alibaba_key_index') || '0';
+        if (alibabaKeySelect) {
+            alibabaKeySelect.value = savedKeyIndex;
+        }
+        
+        // Save preference on change
+        alibabaKeySelect.addEventListener('change', function() {
+            localStorage.setItem('alibaba_key_index', this.value);
+            console.log('Saved Alibaba key preference:', this.value);
+        });
+    </script>
+</body>
+</html>
+
+================================================================================
+FILE 3: config_manager.py
+================================================================================
+"""
+Configuration Manager for PRD Generator
+Handles file-based storage for API keys, settings, and path history
+"""
+
+import os
+import json
+from typing import Dict, List, Any, Optional
+
+class ConfigManager:
+    def __init__(self):
+        self.config_dir = "config"
+        self.api_keys_file = os.path.join(self.config_dir, "API-KEYS.json")
+        self.settings_file = os.path.join(self.config_dir, "SETTINGS.json")
+        self.path_history_file = os.path.join(self.config_dir, "path-history.json")
+        
+        # Ensure config directory exists
+        self._ensure_config_dir()
+        
+        # Initialize files if they don't exist
+        self._initialize_files()
+    
+    def _ensure_config_dir(self):
+        """Create config directory if it doesn't exist"""
+        if not os.path.exists(self.config_dir):
+            os.makedirs(self.config_dir)
+    
+    def _initialize_files(self):
+        """Create initial config files if they don't exist"""
+        # API Keys file
+        if not os.path.exists(self.api_keys_file):
+            with open(self.api_keys_file, 'w') as f:
+                json.dump({}, f, indent=2)
+        
+        # Settings file
+        if not os.path.exists(self.settings_file):
+            with open(self.settings_file, 'w') as f:
+                json.dump({
+                    "selected_model": "gemini",
+                    "max_output_tokens": 100000
+                }, f, indent=2)
+        
+        # Path history file
+        if not os.path.exists(self.path_history_file):
+            with open(self.path_history_file, 'w') as f:
+                json.dump([], f, indent=2)
+    
+    def _read_json_file(self, filepath: str) -> Any:
+        """Read and parse JSON file"""
+        try:
+            with open(filepath, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error reading {filepath}: {e}")
+            return {} if filepath != self.path_history_file else []
+    
+    def _write_json_file(self, filepath: str, data: Any):
+        """Write data to JSON file"""
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            print(f"Error writing {filepath}: {e}")
+    
+    # API Keys Management
+    def get_api_keys(self) -> Dict[str, str]:
+        """Get all API keys"""
+        return self._read_json_file(self.api_keys_file)
+    
+    def save_api_key(self, key_name: str, key_value: str):
+        """Save or update an API key"""
+        keys = self.get_api_keys()
+        keys[key_name] = key_value
+        self._write_json_file(self.api_keys_file, keys)
+    
+    def get_api_key(self, key_name: str) -> Optional[str]:
+        """Get a specific API key"""
+        keys = self.get_api_keys()
+        return keys.get(key_name)
+    
+    def remove_api_key(self, key_name: str):
+        """Remove an API key"""
+        keys = self.get_api_keys()
+        if key_name in keys:
+            del keys[key_name]
+            self._write_json_file(self.api_keys_file, keys)
+    
+    # Settings Management
+    def get_settings(self) -> Dict[str, Any]:
+        """Get all settings"""
+        return self._read_json_file(self.settings_file)
+    
+    def save_setting(self, setting_name: str, value: Any):
+        """Save or update a setting"""
+        settings = self.get_settings()
+        settings[setting_name] = value
+        self._write_json_file(self.settings_file, settings)
+    
+    def get_setting(self, setting_name: str, default: Any = None) -> Any:
+        """Get a specific setting"""
+        settings = self.get_settings()
+        return settings.get(setting_name, default)
+    
+    # Path History Management
+    def get_path_history(self) -> List[str]:
+        """Get path history"""
+        return self._read_json_file(self.path_history_file)
+    
+    def add_path_to_history(self, path: str):
+        """Add a path to history"""
+        if not path or path == 'output':
+            return
+            
+        paths = self.get_path_history()
+        
+        # Remove if already exists (to move to front)
+        if path in paths:
+            paths.remove(path)
+        
+        # Add to beginning
+        paths.insert(0, path)
+        
+        # Keep only last 20 paths
+        paths = paths[:20]
+        
+        self._write_json_file(self.path_history_file, paths)
+    
+    def remove_path_from_history(self, path: str):
+        """Remove a path from history"""
+        paths = self.get_path_history()
+        if path in paths:
+            paths.remove(path)
+            self._write_json_file(self.path_history_file, paths)
+    
+    def clear_path_history(self):
+        """Clear all path history"""
+        self._write_json_file(self.path_history_file, [])
+    
+    # Utility methods
+    def clear_all_data(self):
+        """Clear all configuration data"""
+        self._write_json_file(self.api_keys_file, {})
+        self._write_json_file(self.settings_file, {
+            "selected_model": "gemini",
+            "max_output_tokens": 100000
+        })
+        self._write_json_file(self.path_history_file, [])
+    
+    def export_config(self) -> Dict[str, Any]:
+        """Export all configuration data"""
+        return {
+            "api_keys": self.get_api_keys(),
+            "settings": self.get_settings(),
+            "path_history": self.get_path_history()
+        }
+    
+    def import_config(self, config_data: Dict[str, Any]):
+        """Import configuration data"""
+        if "api_keys" in config_data:
+            self._write_json_file(self.api_keys_file, config_data["api_keys"])
+        
+        if "settings" in config_data:
+            self._write_json_file(self.settings_file, config_data["settings"])
+        
+        if "path_history" in config_data:
+            self._write_json_file(self.path_history_file, config_data["path_history"])
+
+# Create global instance
+config_manager = ConfigManager()
+
+================================================================================
+FILE 4: openrouter_client.py
+================================================================================
+"""
+OpenRouter Client for PRD Generator
+Supports Gemini and other models via OpenRouter API
+"""
+
+import os
+import json
+import requests
+from typing import Dict, Tuple, List, Optional
+import tiktoken
+
+class OpenRouterClient:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://openrouter.ai/api/v1"
+        self.model = "google/gemini-2.0-flash-exp:free"  # Using Gemini 2.5 Pro
+        self.headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost:5000",
+            "X-Title": "PRD Generator"
+        }
+    
+    def estimate_tokens(self, text: str) -> int:
+        """Estimate tokens using tiktoken"""
+        try:
+            # Use cl100k_base encoding as approximation
+            encoding = tiktoken.get_encoding("cl100k_base")
+            tokens = encoding.encode(text)
+            return len(tokens)
+        except:
+            # Fallback to character-based estimation
+            # Rough estimate: 1 token ≈ 4 characters
+            return len(text) // 4
+    
+    def send_prd_request(self, prd_content: str, project_name: str, output_dir: str, max_tokens: int = 100000) -> Tuple[Optional[str], Dict]:
+        """Send PRD to OpenRouter API and get code generation response"""
+        
+        # Create the prompt
+        prompt = f"""You are an expert software architect and developer. Based on the following PRD (Product Requirements Document), generate a complete, production-ready codebase.
+
+PRD Content:
+{prd_content}
+
+Project Name: {project_name}
+Output Directory: {output_dir}
+
+Please generate a complete project with all necessary files. For each file, provide the content in the following JSON format:
+
+{{
+  "files": [
+    {{
+      "filename": "path/to/file.ext",
+      "content": "full file content here"
+    }},
+    // ... more files
+  ]
+}}
+
+Guidelines:
+1. Create a complete, runnable project structure
+2. Include all necessary configuration files (package.json, requirements.txt, etc.)
+3. Add proper error handling and logging
+4. Include a comprehensive README.md with setup and usage instructions
+5. Follow best practices for the chosen technology stack
+6. Add comments to explain complex logic
+7. Create a modular, maintainable architecture
+8. Include basic tests if applicable
+9. Add appropriate .gitignore file
+10. Use TypeScript for type safety if the project is JavaScript-based
+
+IMPORTANT: Return ONLY the JSON structure with no additional text or markdown formatting."""
+
+        # Prepare the request
+        data = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.2,  # Lower temperature for more consistent code generation
+            "top_p": 0.9
+        }
+        
+        # Estimate input tokens
+        input_tokens = self.estimate_tokens(prompt)
+        
+        try:
+            # Send request to OpenRouter
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=self.headers,
+                json=data,
+                timeout=120  # 2 minute timeout for large responses
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                # Extract the generated content
+                generated_content = result['choices'][0]['message']['content']
+                
+                # Extract token usage
+                usage = result.get('usage', {})
+                token_info = {
+                    'input_tokens': usage.get('prompt_tokens', input_tokens),
+                    'output_tokens': usage.get('completion_tokens', 0),
+                    'total_tokens': usage.get('total_tokens', input_tokens)
+                }
+                
+                return generated_content, token_info
+            else:
+                print(f"OpenRouter API error: {response.status_code}")
+                print(f"Response: {response.text}")
+                return None, {'error': f"API error: {response.status_code}"}
+                
+        except requests.exceptions.Timeout:
+            print("Request timed out")
+            return None, {'error': 'Request timed out'}
+        except Exception as e:
+            print(f"Error calling OpenRouter API: {str(e)}")
+            return None, {'error': str(e)}
+
+================================================================================
+FILE 5: moonshot_client.py
+================================================================================
+"""
+Moonshot Client for PRD Generator
+Supports Kimi K2 model via Moonshot API
+"""
+
+import os
+import json
+import requests
+from typing import Dict, Tuple, List, Optional
+import tiktoken
+from openai import OpenAI
+
+class MoonshotClient:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://api.moonshot.cn/v1"
+        self.model = "moonshot-v1-128k"  # Kimi K2 model
+        
+        # Initialize OpenAI client with Moonshot configuration
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url=self.base_url,
+        )
+    
+    def estimate_tokens(self, text: str) -> int:
+        """Estimate tokens for Kimi model"""
+        try:
+            # Use tiktoken for estimation
+            encoding = tiktoken.get_encoding("cl100k_base")
+            tokens = encoding.encode(text)
+            return len(tokens)
+        except:
+            # Fallback: ~1 token per 2 Chinese characters or 4 English characters
+            chinese_chars = sum(1 for char in text if '\u4e00' <= char <= '\u9fff')
+            english_chars = len(text) - chinese_chars
+            return chinese_chars // 2 + english_chars // 4
+    
+    def send_prd_request(self, prd_content: str, project_name: str, output_dir: str, max_tokens: int = 100000) -> Tuple[Optional[str], Dict]:
+        """Send PRD to Moonshot API and get code generation response"""
+        
+        # Create the prompt
+        prompt = f"""You are an expert software architect and developer. Based on the following PRD (Product Requirements Document), generate a complete, production-ready codebase.
+
+PRD Content:
+{prd_content}
+
+Project Name: {project_name}
+Output Directory: {output_dir}
+
+Please generate a complete project with all necessary files. For each file, provide the content in the following JSON format:
+
+{{
+  "files": [
+    {{
+      "filename": "path/to/file.ext",
+      "content": "full file content here"
+    }},
+    // ... more files
+  ]
+}}
+
+Guidelines:
+1. Create a complete, runnable project structure
+2. Include all necessary configuration files (package.json, requirements.txt, etc.)
+3. Add proper error handling and logging
+4. Include a comprehensive README.md with setup and usage instructions
+5. Follow best practices for the chosen technology stack
+6. Add comments to explain complex logic
+7. Create a modular, maintainable architecture
+8. Include basic tests if applicable
+9. Add appropriate .gitignore file
+10. Use TypeScript for type safety if the project is JavaScript-based
+
+IMPORTANT: Return ONLY the JSON structure with no additional text or markdown formatting."""
+
+        # Estimate input tokens
+        input_tokens = self.estimate_tokens(prompt)
+        
+        try:
+            # Use OpenAI client to send request
+            completion = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a professional software developer who generates complete, production-ready codebases based on requirements."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                temperature=0.2,  # Lower temperature for more consistent code generation
+                max_tokens=min(max_tokens, 100000),  # Kimi has 128K context but limit output
+                top_p=0.9
+            )
+            
+            # Extract the generated content
+            generated_content = completion.choices[0].message.content
+            
+            # Extract token usage
+            token_info = {
+                'input_tokens': completion.usage.prompt_tokens if completion.usage else input_tokens,
+                'output_tokens': completion.usage.completion_tokens if completion.usage else 0,
+                'total_tokens': completion.usage.total_tokens if completion.usage else input_tokens
+            }
+            
+            return generated_content, token_info
+            
+        except Exception as e:
+            print(f"Error calling Moonshot API: {str(e)}")
+            return None, {'error': str(e)}
+
+================================================================================
+FILE 6: alibaba-cloud-client.py
+================================================================================
+"""
+ALIBABA-CLOUD-CLIENT.PY - Direct Alibaba Cloud Model Studio API Client
+Created: 23/7/2025
+"""
+
+import requests
+import json
+import tiktoken
+import os
+from typing import Tuple, Optional, Dict, Any
+
+class AlibabCloudClient:
+    """Client for direct Alibaba Cloud Model Studio API access"""
+    
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = "https://dashscope-intl.aliyuncs.com"
+        self.headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        # Model configurations
+        self.models = {
+            "qwen-max": {
+                "name": "Qwen-Max",
+                "model_id": "qwen-max-2025-01-25",
+                "max_tokens": 32768,
+                "supports_thinking": False
+            },
+            "qwen-plus": {
+                "name": "Qwen-Plus",
+                "model_id": "qwen-plus-2025-04-28",
+                "max_tokens": 131072,
+                "supports_thinking": True
+            },
+            "qwen-turbo": {
+                "name": "Qwen-Turbo",
+                "model_id": "qwen-turbo-2025-04-28",
+                "max_tokens": 131072,
+                "supports_thinking": True
+            },
+            # Add new models here:
+            "qwen3-coder-480b-a35b-instruct": {
+                "name": "Qwen3-Coder-480B",
+                "model_id": "qwen3-coder-480b-a35b-instruct",
+                "max_tokens": 131072,
+                "supports_thinking": True
+            },
+            "qwen3-turbo": {
+                "name": "Qwen3-Turbo",
+                "model_id": "qwen3-turbo",
+                "max_tokens": 32768,
+                "supports_thinking": False
+            }
+        }
+        
+        # Default to qwen-plus
+        self.model = "qwen-plus"
+        
+    def estimate_tokens(self, text: str) -> int:
+        """Estimate tokens using tiktoken"""
+        try:
+            encoding = tiktoken.get_encoding("cl100k_base")
+            return len(encoding.encode(text))
+        except:
+            # Fallback to character-based estimation
+            return len(text) // 3  # Rough estimate
+    
+    def create_messages(self, prompt: str, enable_thinking: bool = True) -> list:
+        """Create messages array based on model capabilities"""
+        messages = []
+        
+        model_config = self.models.get(self.model, self.models["qwen-plus"])
+        
+        # Add system message
+        if enable_thinking and model_config["supports_thinking"]:
+            messages.append({
+                "role": "system",
+                "content": "You are an expert software architect and developer. Use chain-of-thought reasoning to analyze the requirements step by step before generating code. Think through the architecture, dependencies, and implementation details carefully."
+            })
+        else:
+            messages.append({
+                "role": "system", 
+                "content": "You are an expert software architect and developer. Generate complete, production-ready codebases based on requirements."
+            })
+        
+        # Add user message
+        messages.append({
+            "role": "user",
+            "content": prompt
+        })
+        
+        return messages
+    
+    def send_prd_request(self, prd_content: str, project_name: str, output_dir: str, max_tokens: int = 32000) -> Tuple[Optional[str], Dict]:
+        """Send PRD to Alibaba Cloud API and get code generation response"""
+        
+        # Get model configuration
+        model_config = self.models.get(self.model, self.models["qwen-plus"])
+        model_id = model_config["model_id"]
+        model_max_tokens = model_config["max_tokens"]
+        
+        # Create the prompt with thinking mode instructions if supported
+        if model_config["supports_thinking"]:
+            prompt = f"""Based on the following PRD, I need you to think through the requirements step by step and then generate a complete, production-ready codebase.
+
+First, analyze:
+1. What type of application is being requested?
+2. What are the core features and requirements?
+3. What technology stack would be most appropriate?
+4. What is the optimal project structure?
+
+Then generate the complete codebase.
+
+PRD Content:
+{prd_content}
+
+Project Name: {project_name}
+Output Directory: {output_dir}
+
+After your analysis, generate a complete project with all necessary files. For each file, provide the content in the following JSON format:
+
+{{
+  "files": [
+    {{
+      "filename": "path/to/file.ext",
+      "content": "full file content here"
+    }},
+    // ... more files
+  ]
+}}
+
+Guidelines:
+1. Create a complete, runnable project structure
+2. Include all necessary configuration files
+3. Add proper error handling and logging
+4. Include a comprehensive README.md
+5. Follow best practices for the chosen stack
+6. Add helpful comments
+7. Create a modular architecture
+8. Include basic tests
+9. Add .gitignore file
+10. Use modern best practices
+
+IMPORTANT: Your final response must be ONLY the JSON structure with no additional text."""
+        else:
+            prompt = f"""You are an expert software architect and developer. Based on the following PRD, generate a complete, production-ready codebase.
+
+PRD Content:
+{prd_content}
+
+Project Name: {project_name}
+Output Directory: {output_dir}
+
+Generate a complete project with all necessary files in this JSON format:
+
+{{
+  "files": [
+    {{
+      "filename": "path/to/file.ext",
+      "content": "full file content here"
+    }}
+  ]
+}}
+
+Guidelines:
+1. Create a complete, runnable project structure
+2. Include all necessary configuration files
+3. Add proper error handling
+4. Include a comprehensive README.md
+5. Follow best practices
+6. Add helpful comments
+7. Create modular architecture
+8. Include basic tests
+9. Add .gitignore file
+10. Use modern practices
+
+Return ONLY the JSON structure."""
+        
+        # Create messages
+        messages = self.create_messages(prompt, enable_thinking=model_config["supports_thinking"])
+        
+        # Prepare request data
+        request_data = {
+            "model": model_id,
+            "messages": messages,
+            "max_tokens": min(max_tokens, model_max_tokens),
+            "temperature": 0.2,
+            "top_p": 0.9
+        }
+        
+        # Add parameters for thinking mode if supported
+        if model_config["supports_thinking"]:
+            request_data["parameters"] = {
+                "enable_thinking": True,
+                "thinking_type": "chain_of_thought"
+            }
+        
+        # Estimate input tokens
+        input_tokens = self.estimate_tokens(prompt)
+        
+        try:
+            # Send request to Alibaba Cloud
+            response = requests.post(
+                f"{self.base_url}/v1/chat/completions",
+                headers=self.headers,
+                json=request_data,
+                timeout=300  # 5 minute timeout for large responses
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                
+                # Extract the generated content
+                generated_content = result['choices'][0]['message']['content']
+                
+                # Extract token usage
+                usage = result.get('usage', {})
+                token_info = {
+                    'input_tokens': usage.get('prompt_tokens', input_tokens),
+                    'output_tokens': usage.get('completion_tokens', 0),
+                    'total_tokens': usage.get('total_tokens', input_tokens),
+                    'model_used': model_id,
+                    'thinking_enabled': model_config["supports_thinking"]
+                }
+                
+                print(f"Successfully generated response using {model_config['name']}")
+                return generated_content, token_info
+            else:
+                error_msg = f"Alibaba Cloud API error: {response.status_code}"
+                try:
+                    error_data = response.json()
+                    if 'message' in error_data:
+                        error_msg += f" - {error_data['message']}"
+                except:
+                    error_msg += f" - {response.text}"
+                
+                print(error_msg)
+                return None, {'error': error_msg}
+                
+        except requests.exceptions.Timeout:
+            print("Request timed out")
+            return None, {'error': 'Request timed out after 5 minutes'}
+        except Exception as e:
+            print(f"Error calling Alibaba Cloud API: {str(e)}")
+            return None, {'error': str(e)}
+
+================================================================================
+FILE 7: requirements.txt
+================================================================================
+flask==2.3.3
+flask-cors==4.0.0
+openai==1.3.5
+requests==2.31.0
+tiktoken==0.5.1
+python-dotenv==1.0.0
+werkzeug==2.3.7
+
+================================================================================
+FILE 8: config/ALIBABA-KEYS.json
+================================================================================
+[
+    "sk-220d883417d84cd69a82f58163453cd6",
+    "sk-f2cc71cc5f7e472eb642dc42120de48f",
+    "sk-3f14a4b1c0a744a2a7a3d8eba827ada9"
+]
+
+================================================================================
+FILE 9: config/API-KEYS.json
+================================================================================
+{
+  "openrouter_api_key": "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",
+  "moonshot_api_key": "sk-tlJSlGbAGRgcgms94kk7kK0wMPakkC25Njc0K27NUo4nBDj6"
+
+  
+}
+
+================================================================================
+FILE 10: README.md
+================================================================================
+# 🚀 PRD to Code Generator - Multi-Model AI Platform
+
+Transform your Product Requirements Documents (PRDs) into production-ready code using state-of-the-art AI models from Google, Moonshot, and Alibaba Cloud.
+
+## ✨ Features
+
+- **Multi-Model Support**: Choose from 4 powerful AI models
+  - **Gemini 2.5 Pro** (Google via OpenRouter) - 2M context window
+  - **Kimi K2** (Moonshot AI) - 128K context, 1T parameters
+  - **Qwen-Plus** (Alibaba) - 131K context with thinking mode
+  - **Qwen-Max** (Alibaba) - 32K context, flagship model
+
+- **Smart Features**:
+  - 📁 Drag & drop multiple PRD files
+  - 📊 Real-time token estimation and cost calculation
+  - 💾 Automatic project structure generation
+  - 🔍 Intelligent project naming from PRD content
+  - 📝 Support for .txt, .md, .doc, .docx files
+  - 🗂️ Path history with quick access
+  - ⚡ File-based configuration storage (no cookies)
+
+## 🛠️ Quick Start
+
+### Prerequisites
+- Python 3.8+
+- pip package manager
+
+### Installation
+
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd PRD-Generator
+   ```
+
+2. **Install dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Run the server**
+   ```bash
+   python app.py
+   ```
+   Or use the batch file:
+   ```bash
+   run.bat
+   ```
+
+4. **Open your browser**
+   Navigate to `http://localhost:5000`
+
+## 🔑 API Keys Setup
+
+### For Gemini (OpenRouter)
+1. Get your API key from [OpenRouter](https://openrouter.ai/keys)
+2. Enter it in the web interface when selecting Gemini
+
+### For Kimi K2 (Moonshot)
+1. Get your API key from [Moonshot Platform](https://platform.moonshot.ai)
+2. Enter it in the web interface when selecting Kimi K2
+
+### For Qwen Models (Alibaba)
+The server comes with built-in Alibaba API keys. No additional setup required!
+
+To use your own keys:
+1. Create `config/ALIBABA-KEYS.json`
+2. Add your keys in array format:
+   ```json
+   ["your-key-1", "your-key-2", "your-key-3"]
+   ```
+
+## 📖 Usage Guide
+
+1. **Select AI Model**: Choose from Gemini, Kimi K2, Qwen-Plus, or Qwen-Max
+2. **Enter API Key**: Provide your API key (except for Qwen models)
+3. **Upload PRD**: Drag & drop files or paste content directly
+4. **Set Output Directory**: Choose where to save generated code
+5. **Estimate Tokens**: Check token usage and costs before generating
+6. **Generate Code**: Click the button and wait for AI magic!
+
+## 💰 Pricing
+
+| Model | Input Cost | Output Cost | Context Window |
+|-------|------------|-------------|----------------|
+| Gemini 2.5 Pro | $0.075/1M | $0.30/1M | 2M tokens |
+| Kimi K2 | $0.15/1M | $2.50/1M | 128K tokens |
+| Qwen-Plus | $0.10/1M | $0.40/1M | 131K tokens |
+| Qwen-Max | $0.15/1M | $0.60/1M | 32K tokens |
+
+## 📁 Project Structure
+
+```
+PRD-Generator/
+├── app.py                    # Flask server
+├── index.html               # Web interface
+├── config_manager.py        # Configuration handler
+├── openrouter_client.py     # Gemini API client
+├── moonshot_client.py       # Kimi K2 API client
+├── alibaba-cloud-client.py  # Qwen API client
+├── requirements.txt         # Python dependencies
+├── config/                  # Configuration files
+│   ├── API-KEYS.json       # API keys storage
+│   ├── SETTINGS.json       # App settings
+│   └── path-history.json   # Output path history
+└── output/                  # Default output directory
+```
+
+## 🔧 Configuration
+
+All settings are stored in the `config/` directory:
+- API keys are saved locally (not in browser cookies)
+- Path history is maintained for quick access
+- Model preferences are remembered
+
+## 🚨 Troubleshooting
+
+### Server won't start
+- Check Python version: `python --version` (needs 3.8+)
+- Reinstall dependencies: `pip install -r requirements.txt --force-reinstall`
+
+### API errors
+- Verify your API key is correct
+- Check your API key has sufficient credits
+- For Qwen models, ensure `config/ALIBABA-KEYS.json` exists
+
+### Generation fails
+- Check token limits for your selected model
+- Try with smaller PRD content
+- Verify output directory permissions
+
+## 🛡️ Security
+
+- API keys are stored locally in `config/` directory
+- No data is sent to third parties except the selected AI provider
+- All file operations are restricted to prevent directory traversal
+- Server runs on localhost only by default
+
+## 🤝 Contributing
+
+Contributions are welcome! Please:
+1. Fork the repository
+2. Create a feature branch
+3. Submit a pull request
+
+## 📄 License
+
+This project is licensed under the MIT License.
+
+## 🙏 Acknowledgments
+
+- Google for Gemini 2.5 Pro
+- Moonshot AI for Kimi K2
+- Alibaba Cloud for Qwen models
+- OpenRouter for API gateway services
+
+---
+Made with ❤️ for developers who want to build faster
